@@ -31,6 +31,15 @@ python -m camoufox_trace_mcp summarize traces/demo.jsonl
 
 `fixtures/replay.py` 回放合成事件并夹入普通日志，用于验证采集链路。真实采集时把 `--` 后的命令换成使用已编译监控浏览器的启动程序。采集器自动传入 `CAMOUFOX_TRACE=1`；需要栈时在外层设置 `CAMOUFOX_TRACE_STACK=1`。普通 stdout 丢弃，普通 stderr 不写入 trace，结果 JSON 单独输出到 CLI stdout。
 
+接入现有 Camoufox 脚本时，先把脚本中的 `executable_path` 指向监控版的 `bin/camoufox-bin`。Playwright 驱动会接管浏览器 stderr，所以采集 Python 脚本还需打开驱动的浏览器日志，并关闭日志颜色以保留 JSON 行：
+
+```bash
+DEBUG=pw:browser DEBUG_COLORS=0 CAMOUFOX_TRACE_STACK=1 \
+python -m camoufox_trace_mcp collect --output traces/session.jsonl --timeout 180 -- python your_script.py
+```
+
+这条命令从当前目录运行你的 `your_script.py`。如果脚本向 Camoufox 显式传入 `env`，应把继承的环境合并进去，让 `CAMOUFOX_TRACE` 等设置进入实际浏览器进程。脚本正常关闭浏览器后，使用 `summarize traces/session.jsonl` 找到脚本位置，再用 `events` 查询该 API 的原始参数、返回摘要和栈。
+
 超时、中断、非零/信号退出、无法启动、输出上限和 stderr 未排空都会保存在 `collection` 记录。POSIX 进程组负责回收仍在同组内的子进程；自行脱离进程组的程序不在这个保证内。关闭浏览器后采集才正常结束；到达 `--timeout` 会终止进程并返回 124。
 
 CLI 退出码：0 为已观察到事件且没有已知采集丢失，3 为无事件，65 为已知不完整/格式损坏，2 为参数或文件错误；子进程失败保留其非零状态（超时 124、中断 130、启动失败 127）。0 不代表网站无检测。

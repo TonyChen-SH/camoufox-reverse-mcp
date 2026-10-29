@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "camoufox-trace-mcp"
+version = "0.1.0"
+description = "Offline analysis and read-only MCP tools for Camoufox native API traces"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+dependencies = []
+
+[project.optional-dependencies]
+mcp = ["mcp==1.29.0"]
+
+[project.scripts]
+camoufox-trace = "camoufox_trace_mcp.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+

@@ -109,7 +109,11 @@ def decode_object(payload: str) -> dict:
     def invalid_constant(value: str) -> None:
         raise ValueError("nonfinite JSON number")
 
-    record = json.loads(payload, object_pairs_hook=_unique_object, parse_constant=invalid_constant)
+    def integer(value: str) -> int | float:
+        return -0.0 if value == "-0" else int(value)
+
+    record = json.loads(payload, object_pairs_hook=_unique_object, parse_constant=invalid_constant,
+                        parse_int=integer)
     if not isinstance(record, dict):
         raise ValueError("trace record must be a JSON object")
     return record

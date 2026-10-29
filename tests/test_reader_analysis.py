@@ -1,12 +1,13 @@
 import copy
 import io
 import json
+import math
 import unittest
 from pathlib import Path
 
 from camoufox_trace_mcp import compare_captures, filter_events, read_capture, summarize
 from camoufox_trace_mcp.analysis import analysis_exit_code
-from camoufox_trace_mcp.reader import MAX_LINE_BYTES, parse_lines, read_stream
+from camoufox_trace_mcp.reader import MAX_LINE_BYTES, decode_object, parse_lines, read_stream
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "pilot.jsonl"
 RECORDS = [json.loads(line) for line in FIXTURE.read_text().splitlines()]
@@ -17,6 +18,26 @@ def capture(*records, **kwargs):
 
 
 class ReaderTests(unittest.TestCase):
+    def test_json_integer_negative_zero_preserves_its_sign_and_integer_types(self):
+        record = decode_object('{"negative_zero":-0,"zero":0,"negative":-1,"positive":1}')
+        self.assertIs(type(record["negative_zero"]), float)
+        self.assertEqual(math.copysign(1, record["negative_zero"]), -1)
+        for key in ("zero", "negative", "positive"):
+            self.assertIs(type(record[key]), int)
+        for token in ("-00", "-01", "+0"):
+            with self.subTest(token=token), self.assertRaises(ValueError):
+                decode_object('{"value":' + token + '}')
+
+    def test_native_negative_zero_survives_in_arguments_and_result(self):
+        event = dict(RECORDS[1], args=[{"type": "number", "value": -0.0}],
+                     result={"type": "number", "value": -0.0})
+        payload = json.dumps(event).replace("-0.0", "-0")
+        result = parse_lines([json.dumps(RECORDS[0]), payload])
+        self.assertEqual(result.flags, set())
+        for value in (result.events[0]["args"][0]["value"], result.events[0]["result"]["value"]):
+            self.assertIs(type(value), float)
+            self.assertEqual(math.copysign(1, value), -1)
+
     def test_native_round_trip_preserves_all_event_fields_and_column(self):
         result = read_capture(FIXTURE)
         self.assertEqual(result.events, RECORDS[1:])
@@ -177,6 +198,25 @@ class AnalysisTests(unittest.TestCase):
         other = [dict(item, pid=999) for item in RECORDS]
         result = compare_captures(self.capture, capture(*other))
         self.assertEqual(result["call_site_changes"], [])
+
+    def test_tied_call_site_results_are_stable_across_arrival_order_and_process_ids(self):
+        for distinct in (3, 12):
+            with self.subTest(distinct=distinct):
+                values = [f"variant-{index:02d}" for index in range(distinct)] + ["z-frequent"] * 2
+                events = [dict(RECORDS[1], seq=index,
+                               result={"type": "string", "value": value})
+                          for index, value in enumerate(values, 1)]
+                baseline = capture(RECORDS[0], *events)
+                candidate = capture(dict(RECORDS[0], pid=999),
+                                    *(dict(event, pid=999) for event in reversed(events)))
+                result = compare_captures(baseline, candidate)
+                before = result["baseline"]["call_sites"][0]
+                after = result["candidate"]["call_sites"][0]
+                expected = ["z-frequent"] + [f"variant-{index:02d}" for index in range(min(distinct, 9))]
+                self.assertEqual([item["result"]["value"] for item in before["result_variants"]], expected)
+                self.assertEqual(after["result_variants"], before["result_variants"])
+                self.assertNotEqual(after["examples"], before["examples"])
+                self.assertEqual(result["call_site_changes"], [])
 
 
 if __name__ == "__main__":

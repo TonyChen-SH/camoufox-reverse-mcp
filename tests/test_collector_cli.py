@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import signal
 import subprocess
@@ -33,6 +34,21 @@ class CollectorTests(unittest.TestCase):
         self.assertNotIn("synthetic child stdout", self.output.read_text())
         self.assertNotIn("unrelated child stderr", self.output.read_text())
         self.assertEqual(report["collections"], [outcome])
+
+    def test_collector_decoding_and_reencoding_preserve_json_negative_zero(self):
+        records = [json.loads(line) for line in FIXTURE.read_text().splitlines()]
+        event = dict(records[1], args=[{"type": "number", "value": -0.0}],
+                     result={"type": "number", "value": -0.0})
+        payload = json.dumps(event).replace("-0.0", "-0")
+        stderr = "CAMOUFOX_TRACE " + json.dumps(records[0]) + "\nCAMOUFOX_TRACE " + payload + "\n"
+        script = "import sys; sys.stderr.write(" + repr(stderr) + ")"
+        outcome = collect([sys.executable, "-c", script], self.output)
+        self.assertEqual(outcome["termination"], "normal_exit")
+        self.assertIn('"value":-0.0', self.output.read_text())
+        for event in (json.loads(self.output.read_text().splitlines()[1]), read_capture(self.output).events[0]):
+            for value in (event["args"][0]["value"], event["result"]["value"]):
+                self.assertIs(type(value), float)
+                self.assertEqual(math.copysign(1, value), -1)
 
     def test_literal_argv_environment_and_unterminated_last_line(self):
         value = ";$(echo SHOULD_NOT_EXECUTE)"

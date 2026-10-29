@@ -65,7 +65,8 @@ def _call_sites(capture: Capture) -> list[dict]:
             group["examples"].append({"pid": event.get("pid"), "seq": event.get("seq")})
     return [dict(json.loads(key), count=group["count"], examples=group["examples"],
                  result_variants=[dict(json.loads(result), count=count)
-                                  for result, count in group["results"].most_common(10)],
+                                  for result, count in sorted(group["results"].items(),
+                                                              key=lambda item: (-item[1], item[0]))[:10]],
                  distinct_result_summaries=len(group["results"]),
                  result_variants_limited=len(group["results"]) > 10)
             for key, group in sorted(groups.items())]

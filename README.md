@@ -19,6 +19,8 @@ python -m camoufox_trace_mcp compare fixtures/pilot.jsonl fixtures/pilot.jsonl
 
 摘要包括 API 次数、脚本 URL/行列、调用位置聚合、返回值摘要变体、异常与截断情况。`compare` 输出调用计数及调用位置结果摘要的差异；它不匹配同一个逻辑调用，也不把差异认定为风控原因。对象只含类名、字符串可能截断，相同摘要不能证明原值相同。
 
+数值负零会保留符号；返回摘要按计数与规范 JSON 键稳定排序，相同结果集合不会因线程完成顺序或进程编号改变而产生差异。
+
 ## 采集
 
 POSIX 系统可显式启动一个本地命令，收集 stderr 中带 `CAMOUFOX_TRACE ` 标记的事件，写入新 JSONL 文件。拒绝覆盖已有文件，不使用 shell。这个功能仅在 CLI 提供，MCP 不执行进程。

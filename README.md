@@ -143,7 +143,7 @@ PYTHONPATH=src python -m unittest discover -s tests_mcp -v
 
 当前为 49 个核心测试和 1 个真实 SDK stdio 集成测试。新增回归检查四种操作、CLI/MCP 组合筛选、scope 缺失兼容，以及静态/实例返回值互换不会被合并掩盖。
 
-已用通用监控版的 924 条真实浏览器事件验证四个工具、读写/构造/静态操作筛选、Worker、负零及重排比较。页面回归要求原有 16 个 API 与新增操作合计 35 个不同 API 名；生成入口数量与逐项实测数量分别报告。
+[最终原生运行](https://github.com/TonyChen-SH/camoufox-reverse/actions/runs/41001689611)通过五种采集模式和真实 MCP SDK 联调；带栈采集包含 929 条事件，官方 Python 启动器采集包含 1,724 条事件。四个工具、读写/构造/静态操作筛选、Worker、负零及重排比较均通过。页面回归要求原有 16 个 API 与新增操作合计 35 个不同 API 名；生成入口数量与逐项实测数量分别报告。
 
 [配套构建工作流](https://github.com/TonyChen-SH/camoufox-reverse/actions/workflows/native-browser.yml) 在浏览器五种模式、完整上游补丁守卫与 build-tester 全部通过后上传 **camoufox-trace-linux-x86_64** 和 **native-browser-evidence**。从成功的通用版本运行下载报告与原始 JSONL，可核对该次验证范围。测试结果不能直接确定目标网站的风控原因。
 

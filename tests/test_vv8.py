@@ -1,5 +1,6 @@
 import json
 import gc
+import hashlib
 import math
 import os
 from pathlib import Path
@@ -38,6 +39,20 @@ def capture(records):
 
 
 class Vv8Tests(unittest.TestCase):
+    def test_source_hash_preserves_lone_units_and_declares_its_byte_encoding(self):
+        result = capture(envelopes(['~a', '@?', '$1:"edge.js":A\\ud800B\\udfffC\\ud83e\\udd8a',
+                                    '!1', 'g3:{1,Window}:"x"']))
+        script = result.engine.scripts[0]
+        self.assertEqual(script['source'], 'A\ud800B\udfffC🦊')
+        self.assertEqual(script['source_sha256_encoding'], 'utf-8-surrogatepass')
+        exact_bytes = b'A\xed\xa0\x80B\xed\xbf\xbfC\xf0\x9f\xa6\x8a'
+        self.assertEqual(script['source_sha256'], hashlib.sha256(exact_bytes).hexdigest())
+        self.assertNotEqual(script['source_sha256'],
+                            hashlib.sha256(b'A\xef\xbf\xbdB\xef\xbf\xbdC\xf0\x9f\xa6\x8a').hexdigest())
+        self.assertEqual(result.events[0]['source_offset'], 3)
+        self.assertEqual(result.events[0]['source']['column'], 4)
+        self.assertEqual(result.flags, set())
+
     def test_chunk_assembly_preserves_source_context_and_unobserved_values(self):
         result = capture(envelopes())
         self.assertEqual(len(result.events), 4)

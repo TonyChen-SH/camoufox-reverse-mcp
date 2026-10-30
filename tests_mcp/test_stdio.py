@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import sys
@@ -13,6 +14,94 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_lone_utf16_surrogates_are_recoverable_through_all_tools(self):
+        def restored(value):
+            self.assertEqual(value['encoding'], 'utf16le_base64')
+            self.assertTrue(value['escaped'].isascii())
+            decoded = base64.b64decode(value['data'], validate=True).decode('utf-16-le', 'surrogatepass')
+            self.assertEqual(json.loads(value['escaped']), decoded)
+            return decoded
+
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            trace_root = Path(directory) / 'traces'
+            trace_root.mkdir()
+            original = ['~a', '@?', r'$1:"https\://site.test/a.js":const x = "\ud800"; window.x;',
+                        '!1', 'g-1:{1,Window}:"x"']
+            (trace_root / 'source.log').write_text('\n'.join(original) + '\n', encoding='ascii')
+            source_text = 'const face = "🦊";\r\nconst x = "\ud800"; window.x;'
+            records = ['~a', r'@"origin\ud800":"token\udfff"',
+                       r'$1:"https\://site.test/\ud800.js":const face = "\ud83e\udd8a";\x0d\x0aconst x = "\ud800"; window.x;',
+                       '!1', r'g-1:{1,Window}:"prop\ud800"',
+                       r'c-1:%log:{2,Console}:"arg\udfff":sym\ud800:"\ud83e\udd8a"',
+                       r'$2:1:eval("\udfff");', '!2', r's-1:{1,Window}:"plain":"\ud800"']
+            (trace_root / 'edges.log').write_text('\n'.join(records) + '\n', encoding='ascii')
+            (trace_root / 'low-\udcff.jsonl').write_bytes(b'')
+            metadata = json.loads((ROOT / 'fixtures/pilot.jsonl').read_text().splitlines()[0])
+            metadata['labels'] = {'\ud800': 'first', 'plain': '\udfff'}
+            (trace_root / 'keyed.jsonl').write_text(json.dumps(metadata) + '\n', encoding='ascii')
+            parameters = StdioServerParameters(
+                command=sys.executable,
+                args=['-m', 'camoufox_trace_mcp', 'serve', '--trace-root', str(trace_root)],
+                cwd=ROOT, env=dict(os.environ, PYTHONPATH=str(ROOT / 'src')),
+            )
+            with open(Path(directory) / 'server-stderr', 'w+') as errlog:
+                async with stdio_client(parameters, errlog=errlog) as (read, write):
+                    async with ClientSession(read, write, read_timeout_seconds=timedelta(seconds=10)) as session:
+                        await session.initialize()
+                        source = await session.call_tool('get_trace_script_source', {'path': 'source.log', 'index': 0})
+                        self.assertFalse(source.isError, str(source.content))
+                        self.assertEqual(restored(source.structuredContent['source']),
+                                         'const x = "\ud800"; window.x;')
+                        requests = {
+                            'list_traces': {},
+                            'summarize_trace': {'path': 'edges.log'},
+                            'get_trace_events': {'path': 'edges.log'},
+                            'compare_traces': {'baseline': 'edges.log', 'candidate': 'edges.log'},
+                            'get_trace_scripts': {'path': 'edges.log'},
+                            'get_trace_script_source': {'path': 'edges.log', 'index': 0},
+                            'get_trace_raw_records': {'path': 'edges.log'},
+                        }
+                        reports = {}
+                        for name, arguments in requests.items():
+                            result = await session.call_tool(name, arguments)
+                            self.assertFalse(result.isError, f'{name}: {result.content!r}')
+                            self.assertIsNotNone(result.structuredContent, name)
+                            json.dumps(result.structuredContent, ensure_ascii=False).encode('utf-8')
+                            reports[name] = result.structuredContent
+                        self.assertIn('low-\udcff.jsonl', [restored(name) if isinstance(name, dict) else name
+                                                       for name in reports['list_traces']['traces']])
+                        summary = reports['summarize_trace']
+                        self.assertEqual(summary['integrity'], 'no_known_loss')
+                        self.assertIn('Window.prop\ud800', [restored(item['api']) if isinstance(item['api'], dict)
+                                                           else item['api'] for item in summary['apis']])
+                        events = reports['get_trace_events']['events']
+                        self.assertEqual(restored(events[0]['property']['value']), 'prop\ud800')
+                        self.assertEqual(restored(events[0]['source']['url']), 'https://site.test/\ud800.js')
+                        self.assertEqual(restored(events[0]['origin']), 'origin\ud800')
+                        self.assertEqual(restored(events[0]['security_token']), 'token\udfff')
+                        self.assertEqual(restored(events[1]['args'][0]['value']), 'arg\udfff')
+                        self.assertEqual(restored(events[1]['args'][1]['raw']), 'sym\ud800')
+                        self.assertEqual(events[1]['args'][2]['value'], '🦊')
+                        self.assertEqual(events[1]['api'], 'Console.log')
+                        self.assertEqual(restored(events[2]['args'][0]['value']), '\ud800')
+                        scripts = reports['get_trace_scripts']['scripts']
+                        self.assertEqual(scripts[1]['parent_id'], 1)
+                        self.assertEqual(restored(scripts[0]['url']), 'https://site.test/\ud800.js')
+                        self.assertEqual(restored(reports['get_trace_script_source']['source']), source_text)
+                        self.assertEqual(reports['get_trace_script_source']['utf16_length'],
+                                         len(source_text.encode('utf-16-le', 'surrogatepass')) // 2)
+                        raw = reports['get_trace_raw_records']['records']
+                        self.assertEqual([item['raw'] for item in raw], records)
+                        self.assertEqual(reports['compare_traces']['call_site_changes'], [])
+                        keyed = await session.call_tool('summarize_trace', {'path': 'keyed.jsonl'})
+                        self.assertFalse(keyed.isError, str(keyed.content))
+                        labels = keyed.structuredContent['metadata'][0]['labels']
+                        self.assertEqual(labels['encoding'], 'utf16_keyed_entries')
+                        self.assertEqual(restored(labels['entries'][0]['key']), '\ud800')
+                        self.assertEqual(labels['entries'][0]['value'], 'first')
+                        self.assertEqual(labels['entries'][1]['key'], 'plain')
+                        self.assertEqual(restored(labels['entries'][1]['value']), '\udfff')
+
     async def test_read_only_tool_round_trip_and_escape_rejection(self):
         with tempfile.TemporaryDirectory(dir=ROOT) as directory:
             trace_root = Path(directory) / "traces"

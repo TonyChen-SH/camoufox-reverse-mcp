@@ -247,6 +247,7 @@ class EngineTrace:
                       'parent_id': parent, 'parent_unknown': fields[1] == '#?',
                       'source_name_token': fields[1], 'source': fields[2],
                       'source_sha256': hashlib.sha256(fields[2].encode('utf-8', 'surrogatepass')).hexdigest(),
+                      'source_sha256_encoding': 'utf-8-surrogatepass',
                       'utf16_length': length, 'source_characters': len(fields[2]),
                       'origin': context['origin'], 'security_token': context['security_token'],
                       '_line_starts': starts}

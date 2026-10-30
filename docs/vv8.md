@@ -58,10 +58,14 @@ Shell 在 CLI 侧展开输入；MCP 工具不提供路径 glob。导入按文件
 
 事件 offset 使用 UTF-16 码元；行、列由对应注册源码计算，为一基 UTF-16 位置。支持 CRLF、CR、LF、U+2028、U+2029 和非 BMP 字符。未知或越界 offset 不生成猜测位置。`get_trace_script_source` 的分页 offset 则使用 Unicode 码点，并在结果中声明单位。
 
+合法 JS 字符串与源码可包含孤立的 UTF-16 代理码元。本包在内存中完整保留，不替换为 U+FFFD，也不标成丢失。脚本元数据的 `source_sha256_encoding:"utf-8-surrogatepass"` 说明既有 `source_sha256` 的字节编码：正常 Unicode 使用标准 UTF-8，孤立代理码元保留其三字节 surrogatepass 表达。该 hash 不冒充官方 Go 的 hash。固定版本 Go [`splitFields`](https://github.com/wspr-ncsu/visiblev8/blob/068c617f28686f5c43d27c891803cd21510aa141/post-processor/core/core.go#L20) 会丢弃单个孤立代理码元，还可能跨字段组合；不是规范的 UTF-16 替换解码。例如源码 `A\ud800B` 在官方 `-annotate` 中按 `AB` 哈希。需要官方聚合语义时，应导出未改变的 ASCII 原始记录并由该版本后处理器执行。
+
 ## MCP
 
 原四个工具均可分析包含引擎记录的 capture。`get_trace_events` 支持 channel、op、API、URL、PID/TID、isolate、script_id、property_name、source_offset 和分页。engine 没有异常结果，因此 `threw:false` 不会把未知结果当成成功。
 
 新增只读工具：`get_trace_scripts` 返回脚本注册与可用于查询的零基 `index`；`get_trace_script_source` 按 index 分页取源码；`get_trace_raw_records` 返回按线程分组的已重组原始记录。源码全文保存在 capture 中，元数据列表不重复内嵌全文。导出、包装只在显式 CLI 命令提供，MCP 工具不启动进程或写入任意路径。
+
+七个 MCP 工具的返回值统一处理不可直接编码为 UTF-8 的字符串。只有包含孤立代理码元的字符串改为 `{"encoding":"utf16le_base64","data":"ANg=","escaped":"\"\\ud800\""}`；`data` 是无 BOM 的完整 UTF-16LE 字节，`escaped` 是可用 JSON 解码恢复的 ASCII 字符串字面量。正常 Unicode 字符串保持原接口。此规则也适用于 URL、属性名、参数和解码后的 symbol token，不仅是源码。若对象键含孤立代理码元，该对象使用 `{"encoding":"utf16_keyed_entries","entries":[{"key":...,"value":...}]}`，键和值递归应用同一规则，不丢弃或覆盖键。源分页 offset/limit、UTF-16 事件 offset 与完整源码 hash 均按原始文本计算；原始 ASCII VV8 记录不变。
 
 原始 VV8 格式兼容不等于原生浏览器的所有监控路径均已验证。浏览器测试还应检查热循环、Worker、eval、构造器及语义不变；官方 Go 后处理器的各模式另有 IDL、数据库、规则或实体数据要求。

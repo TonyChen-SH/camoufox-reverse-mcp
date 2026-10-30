@@ -14,6 +14,135 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_many_unavailable_sources_have_bounded_previews_and_an_independent_sdk_cursor(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            trace_root = Path(directory) / 'traces'
+            trace_root.mkdir()
+            controls = [dict(schema=1, event='source_unavailable', channel='engine', pid=41, tid=51,
+                             source_id=index, reason='source_missing', filename=None,
+                             introduction_type=None, retrievable=False) for index in range(100, 305)]
+            raw = ['~a', '@?', '$1:"fixture.js":x;', '!1', 'g0:{1,Window}:"x"']
+            rows = controls + [dict(schema=1, event='vv8', pid=41, tid=51, record=index,
+                                     part=0, final=True, data=value) for index, value in enumerate(raw, 1)]
+            (trace_root / 'many.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
+            parameters = StdioServerParameters(
+                command=sys.executable,
+                args=['-m', 'camoufox_trace_mcp', 'serve', '--trace-root', str(trace_root)],
+                cwd=ROOT, env=dict(os.environ, PYTHONPATH=str(ROOT / 'src')),
+            )
+            with open(Path(directory) / 'server-stderr', 'w+') as errlog:
+                async with stdio_client(parameters, errlog=errlog) as (read, write):
+                    async with ClientSession(read, write, read_timeout_seconds=timedelta(seconds=10)) as session:
+                        await session.initialize()
+                        for name, extra in (('summarize_trace', {}), ('get_trace_events', {'limit': 1}),
+                                            ('get_trace_raw_records', {'limit': 1}),
+                                            ('get_trace_script_source', {'index': 0, 'limit': 1})):
+                            result = await session.call_tool(name, {'path': 'many.jsonl', **extra})
+                            self.assertFalse(result.isError, str(result.content))
+                            report = result.structuredContent
+                            if name == 'summarize_trace':
+                                report = report['engine']
+                            self.assertEqual(report['source_unavailable'], controls[:100])
+                            self.assertEqual(report['source_unavailable_count'], 205)
+                            self.assertTrue(report['source_unavailable_limited'])
+                            self.assertFalse(report['source_provenance_complete'])
+                        recovered, offset = [], 0
+                        while offset is not None:
+                            result = await session.call_tool('get_trace_scripts', {
+                                'path': 'many.jsonl', 'offset': offset, 'limit': 83})
+                            self.assertFalse(result.isError, str(result.content))
+                            page = result.structuredContent
+                            self.assertEqual(page['matched'], 1)
+                            self.assertIsNone(page['next_offset'])
+                            self.assertEqual(page['source_unavailable_count'], 205)
+                            self.assertEqual(page['source_unavailable_matched'], 205)
+                            self.assertEqual(len(page['scripts']), 1 if offset == 0 else 0)
+                            self.assertLessEqual(len(page['source_unavailable']), 83)
+                            recovered.extend(page['source_unavailable'])
+                            offset = page['source_unavailable_next_offset']
+                        self.assertEqual(recovered, controls)
+
+    async def test_missing_source_metadata_survives_the_seven_read_only_tools(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            trace_root = Path(directory) / 'traces'
+            trace_root.mkdir()
+            control = dict(schema=1, event='source_unavailable', channel='engine', pid=41, tid=51,
+                           source_id=1, reason='source_missing', filename=None,
+                           introduction_type=None, retrievable=False, scope='source', truncated=False)
+            raw = ['~a', '@?', '!?', 'c-1:%native:#U', '$2:#?:child();', '!2', 'g0:{1,Window}:"x"']
+            rows = [control] + [dict(schema=1, event='vv8', pid=41, tid=51, record=index,
+                                     part=0, final=True, data=value) for index, value in enumerate(raw, 1)]
+            (trace_root / 'missing.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
+            parameters = StdioServerParameters(
+                command=sys.executable,
+                args=['-m', 'camoufox_trace_mcp', 'serve', '--trace-root', str(trace_root)],
+                cwd=ROOT, env=dict(os.environ, PYTHONPATH=str(ROOT / 'src')),
+            )
+            with open(Path(directory) / 'server-stderr', 'w+') as errlog:
+                async with stdio_client(parameters, errlog=errlog) as (read, write):
+                    async with ClientSession(read, write, read_timeout_seconds=timedelta(seconds=10)) as session:
+                        await session.initialize()
+                        requests = {'list_traces': {}, 'summarize_trace': {'path': 'missing.jsonl'},
+                                    'get_trace_events': {'path': 'missing.jsonl'},
+                                    'get_trace_scripts': {'path': 'missing.jsonl'},
+                                    'get_trace_script_source': {'path': 'missing.jsonl', 'index': 0},
+                                    'get_trace_raw_records': {'path': 'missing.jsonl'},
+                                    'compare_traces': {'baseline': 'missing.jsonl', 'candidate': 'missing.jsonl'}}
+                        reports = {}
+                        for name, arguments in requests.items():
+                            result = await session.call_tool(name, arguments)
+                            self.assertFalse(result.isError, f'{name}: {result.content!r}')
+                            self.assertIsNotNone(result.structuredContent, name)
+                            reports[name] = result.structuredContent
+                        summary = reports['summarize_trace']
+                        self.assertEqual(summary['integrity'], 'no_known_loss')
+                        self.assertFalse(summary['engine']['source_provenance_complete'])
+                        self.assertEqual(summary['engine']['source_unavailable'], [control])
+                        for name in ('get_trace_events', 'get_trace_scripts', 'get_trace_script_source', 'get_trace_raw_records'):
+                            self.assertEqual(reports[name]['source_unavailable'], [control])
+                            self.assertFalse(reports[name]['source_provenance_complete'])
+                        self.assertIsNone(reports['get_trace_events']['events'][0]['source'])
+                        self.assertEqual(reports['get_trace_script_source']['source'], 'child();')
+                        self.assertEqual([item['raw'] for item in reports['get_trace_raw_records']['records']], raw)
+                        self.assertEqual(reports['compare_traces']['call_site_changes'], [])
+
+    async def test_engine_stop_reasons_are_reported_without_claiming_an_event_cap(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            trace_root = Path(directory) / 'traces'
+            trace_root.mkdir()
+            reasons = ('engine_source_or_context', 'engine_value', 'engine_transport', 'engine_record_cap')
+            limits = {}
+            for reason in reasons:
+                rows = [dict(schema=1, event='vv8', pid=4758, tid=1, record=index,
+                             part=0, final=True, data=raw) for index, raw in enumerate(['~a', '@?'], 1)]
+                limit = dict(schema=1, event='limit', pid=4758, channel='engine', emitted=2, reason=reason)
+                limits[reason] = limit
+                (trace_root / f'{reason}.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows + [limit]))
+            parameters = StdioServerParameters(
+                command=sys.executable,
+                args=['-m', 'camoufox_trace_mcp', 'serve', '--trace-root', str(trace_root)],
+                cwd=ROOT, env=dict(os.environ, PYTHONPATH=str(ROOT / 'src')),
+            )
+            with open(Path(directory) / 'server-stderr', 'w+') as errlog:
+                async with stdio_client(parameters, errlog=errlog) as (read, write):
+                    async with ClientSession(read, write, read_timeout_seconds=timedelta(seconds=10)) as session:
+                        await session.initialize()
+                        for reason in reasons:
+                            result = await session.call_tool('summarize_trace', {'path': f'{reason}.jsonl'})
+                            self.assertFalse(result.isError, str(result.content))
+                            report = result.structuredContent
+                            self.assertEqual(report['limits'], [limits[reason]])
+                            self.assertEqual(report['integrity'], 'incomplete')
+                            expected = 'producer_event_cap' if reason == 'engine_record_cap' else 'producer_stopped'
+                            other = 'producer_stopped' if reason == 'engine_record_cap' else 'producer_event_cap'
+                            self.assertIn(expected, report['statuses'])
+                            self.assertNotIn(other, report['statuses'])
+                        compared = await session.call_tool('compare_traces', {
+                            'baseline': 'engine_source_or_context.jsonl', 'candidate': 'engine_record_cap.jsonl'})
+                        self.assertFalse(compared.isError, str(compared.content))
+                        self.assertIn('producer_stopped', compared.structuredContent['baseline']['statuses'])
+                        self.assertIn('producer_event_cap', compared.structuredContent['candidate']['statuses'])
+
     async def test_lone_utf16_surrogates_are_recoverable_through_all_tools(self):
         def restored(value):
             self.assertEqual(value['encoding'], 'utf16le_base64')

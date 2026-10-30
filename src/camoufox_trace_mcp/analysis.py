@@ -13,7 +13,7 @@ INTERPRETATION = (
     "This capture cannot identify a server ban cause, recover missing call stacks or IDs, "
     "or reveal resolved promises and modified output-buffer contents."
 )
-LOSS_FLAGS = {"malformed_lines", "unsupported_schema", "unknown_events", "producer_event_cap",
+LOSS_FLAGS = {"malformed_lines", "unsupported_schema", "unknown_events", "producer_event_cap", "producer_stopped",
               "reader_event_cap", "reader_record_cap", "reader_input_cap", "sequence_discontinuity",
               "child_timeout", "child_interrupted", "child_spawn_failed", "child_nonzero_exit",
               "child_signal_exit", "stderr_drain_incomplete", "collector_output_cap"}
@@ -165,7 +165,8 @@ def filter_events(capture: Capture, *, api: str | None = None, source_url: str |
     end = offset + limit
     return {"statuses": statuses(capture), "matched": len(matched), "offset": offset,
             "limit": limit, "next_offset": end if end < len(matched) else None,
-            "events": matched[offset:end], "interpretation": INTERPRETATION}
+            "events": matched[offset:end], "interpretation": INTERPRETATION,
+            **capture.engine.source_availability()}
 
 
 def compare_captures(baseline: Capture, candidate: Capture, *, channel: str | None = None) -> dict:

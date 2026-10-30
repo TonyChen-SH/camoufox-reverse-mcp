@@ -69,6 +69,28 @@ def _native_error(record: dict) -> str | None:
         return None
     if event == "limit":
         return None if _integer(record.get("emitted")) else "limit requires emitted"
+    if event == 'source_unavailable':
+        required = {'channel', 'tid', 'source_id', 'reason', 'filename', 'introduction_type', 'retrievable'}
+        if not required.issubset(record) or record['channel'] != 'engine':
+            return 'source_unavailable requires engine channel and source metadata'
+        if not _integer(record['tid'], 1) or record['tid'] >= 2 ** 64:
+            return 'source_unavailable tid must be a positive uint64'
+        if not _integer(record['source_id']) or record['source_id'] >= 2 ** 32:
+            return 'source_unavailable source_id must be uint32'
+        if not isinstance(record['reason'], str) or not record['reason']:
+            return 'source_unavailable reason must be a nonempty string'
+        if any(record[key] is not None and not isinstance(record[key], str)
+               for key in ('filename', 'introduction_type')) or type(record['retrievable']) is not bool:
+            return 'source_unavailable strings or retrievable flag are invalid'
+        if 'scope' in record and record['scope'] not in ('source', 'introduction'):
+            return 'source_unavailable scope must be source or introduction'
+        parent = record.get('introduction_source_id')
+        if parent is not None and (not _integer(parent) or parent >= 2 ** 32):
+            return 'source_unavailable introduction_source_id must be uint32 or null'
+        if any(key in record and type(record[key]) is not bool
+               for key in ('truncated', 'filename_truncated', 'introduction_type_truncated')):
+            return 'source_unavailable truncation flags must be booleans'
+        return None
     if event != "api":
         return "unknown protocol-1 event"
     required = {"seq", "mono_us", "api", "op", "source", "realm_class", "args",
@@ -247,7 +269,12 @@ class Reader:
             capture.metadata.append(record)
         elif record["event"] == "limit":
             capture.limits.append(record)
-            capture.flags.add("producer_event_cap")
+            stopped = record.get("channel") == "engine" and record.get("reason") != "engine_record_cap"
+            capture.flags.add("producer_stopped" if stopped else "producer_event_cap")
+        elif record['event'] == 'source_unavailable':
+            capture.engine.source_unavailable.append(record)
+            capture.engine.stream(record['pid'], record['tid'])
+            capture.flags.add('source_unavailable')
         else:
             pid, seq = record["pid"], record["seq"]
             seen = self._sequences.setdefault(pid, set())

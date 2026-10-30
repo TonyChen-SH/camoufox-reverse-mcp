@@ -130,9 +130,13 @@ class EngineTrace:
     def __init__(self):
         self.streams: dict[tuple[int | None, int | None], Stream] = {}
         self.scripts: list[dict] = []
+        self.source_unavailable: list[dict] = []
+        self._source_provenance_complete = True
         self._issue = None
 
     def _error(self, line: int, status: str, reason: str) -> None:
+        if status in ('provenance_unknown', 'vv8_missing_context', 'vv8_unknown_parent'):
+            self._source_provenance_complete = False
         if self._issue is not None:
             self._issue(line, status, reason)
 
@@ -237,6 +241,8 @@ class EngineTrace:
             if script_id in context['scripts']:
                 raise ValueError('duplicate script ID in one isolate')
             parent = int(fields[1]) if fields[1].isascii() and fields[1].isdigit() else None
+            if fields[1] == '#?':
+                self._source_provenance_complete = False
             if parent is not None and parent not in context['scripts']:
                 self._error(line, 'vv8_unknown_parent', 'eval parent was not registered in this isolate')
             starts, length = _source_index(fields[2])
@@ -260,6 +266,8 @@ class EngineTrace:
             if context is not None:
                 context['active'] = None
                 context['explicit_unknown'] = fields[0] == '?'
+                if context['explicit_unknown']:
+                    self._source_provenance_complete = False
                 if fields[0] != '?':
                     script = context['scripts'].get(int(fields[0]))
                     if script is None:
@@ -338,7 +346,15 @@ class EngineTrace:
                              'identity_source': stream.identity_source}
                             for stream in self.streams.values()],
                 'scripts': [script_metadata(script) for script in self.scripts[:100]],
-                'scripts_limited': len(self.scripts) > 100}
+                'scripts_limited': len(self.scripts) > 100, **self.source_availability()}
+
+    def source_availability(self, *, offset: int = 0, limit: int | None = 100) -> dict:
+        controls = self.source_unavailable[offset:offset + limit if limit is not None else None]
+        return {'source_provenance_complete': bool(self.scripts) and self._source_provenance_complete and not self.source_unavailable,
+                'source_provenance_scope': 'observed_engine_sources',
+                'source_unavailable': controls,
+                'source_unavailable_count': len(self.source_unavailable),
+                'source_unavailable_limited': len(controls) < len(self.source_unavailable)}
 
 
 def script_metadata(script: dict) -> dict:
@@ -351,7 +367,10 @@ def scripts_page(capture, *, offset: int = 0, limit: int = 100) -> dict:
     return {'scripts': [script_metadata(script) for script in scripts[offset:offset + limit]],
             'matched': len(scripts), 'offset': offset, 'limit': limit,
             'next_offset': offset + limit if offset + limit < len(scripts) else None,
-            'statuses': sorted(capture.flags)}
+            'statuses': sorted(capture.flags), **capture.engine.source_availability(offset=offset, limit=limit),
+            'source_unavailable_matched': len(capture.engine.source_unavailable),
+            'source_unavailable_offset': offset, 'source_unavailable_limit': limit,
+            'source_unavailable_next_offset': offset + limit if offset + limit < len(capture.engine.source_unavailable) else None}
 
 
 def script_source(capture, index: int, *, offset: int = 0, limit: int = 4096) -> dict:
@@ -363,7 +382,7 @@ def script_source(capture, index: int, *, offset: int = 0, limit: int = 4096) ->
     return dict(script_metadata(script), source=source[offset:offset + limit], offset=offset, limit=limit,
                 source_page_unit='unicode_code_points',
                 next_offset=offset + limit if offset + limit < len(source) else None,
-                statuses=sorted(capture.flags))
+                statuses=sorted(capture.flags), **capture.engine.source_availability())
 
 
 def raw_records_page(capture, *, offset: int = 0, limit: int = 100,
@@ -379,7 +398,7 @@ def raw_records_page(capture, *, offset: int = 0, limit: int = 100,
     return {'records': records[offset:offset + limit], 'matched': len(records),
             'offset': offset, 'limit': limit,
             'next_offset': offset + limit if offset + limit < len(records) else None,
-            'statuses': sorted(capture.flags)}
+            'statuses': sorted(capture.flags), **capture.engine.source_availability()}
 
 
 def _page(offset: int, limit: int, maximum: int = 1000) -> None:
@@ -429,7 +448,7 @@ def export_vv8(capture, destination: str | Path, *, segment_bytes: int = DEFAULT
                 'rollover': 'After the threshold is exceeded, start the next record in a new segment.',
                 'filename_timestamp': 'export_creation_time_not_event_time',
                 'identity': 'Native envelope IDs or IDs from the input filename; unknown remains unknown.',
-                'statuses': sorted(capture.flags)}
+                'statuses': sorted(capture.flags), **capture.engine.source_availability(limit=None)}
     with (destination / 'manifest.json').open('x', encoding='utf-8') as output:
         json.dump(manifest, output, ensure_ascii=True, indent=2)
         output.write('\n')
@@ -506,10 +525,43 @@ def read_vv8_segments(paths: list[str | Path]):
     return reader.capture
 
 
+def _manifest_controls(manifest: str | Path, paths: list[str | Path]) -> list[dict]:
+    from .analysis import LOSS_FLAGS
+    from .reader import MAX_INPUT_BYTES, _native_error, decode_object
+
+    with Path(manifest).open('rb') as source:
+        payload = source.read(MAX_INPUT_BYTES + 1)
+    if len(payload) > MAX_INPUT_BYTES:
+        raise ValueError('VV8 manifest exceeds the input byte limit')
+    data = decode_object(payload.decode('utf-8'))
+    if data.get('format') != 'visiblev8':
+        raise ValueError('manifest must describe a VisibleV8 export')
+    files, statuses, controls = data.get('files'), data.get('statuses', []), data.get('source_unavailable', [])
+    if not isinstance(files, list) or any(not isinstance(item, dict) or not isinstance(item.get('name'), str)
+                                          for item in files):
+        raise ValueError('manifest files must be an array of named segments')
+    if sorted(item['name'] for item in files) != sorted(Path(path).name for path in paths):
+        raise ValueError('manifest segments do not match the explicit raw inputs')
+    if not isinstance(statuses, list) or any(not isinstance(item, str) for item in statuses):
+        raise ValueError('manifest statuses must be strings')
+    if set(statuses) & LOSS_FLAGS:
+        raise ValueError('cannot import a manifest with known loss')
+    if not isinstance(controls, list):
+        raise ValueError('manifest source_unavailable must be an array')
+    for record in controls:
+        if not isinstance(record, dict) or type(record.get('schema')) is not int or record['schema'] != 1 or (
+            record.get('event') != 'source_unavailable') or _native_error(record) is not None:
+            raise ValueError('manifest contains invalid source_unavailable metadata')
+    return controls
+
+
 def import_vv8(path: str | Path | list[str | Path], output: str | Path, *, pid: int | None = None,
-               tid: int | None = None) -> dict:
+               tid: int | None = None, manifest: str | Path | None = None) -> dict:
     from .analysis import LOSS_FLAGS
     paths = [path] if isinstance(path, (str, Path)) else list(path)
+    controls = _manifest_controls(manifest, paths) if manifest is not None else []
+    if controls and (pid is not None or tid is not None):
+        raise ValueError('manifest source metadata requires filename identities without pid/tid overrides')
     capture = read_vv8_segments(paths)
     if capture.flags & LOSS_FLAGS or not capture.engine.streams:
         raise ValueError('cannot import an invalid or empty VV8 stream')
@@ -528,6 +580,8 @@ def import_vv8(path: str | Path | list[str | Path], output: str | Path, *, pid: 
     try:
         with output.open('x', encoding='ascii', newline='\n') as destination:
             created = True
+            for record in controls:
+                destination.write(json.dumps(record, ensure_ascii=True, separators=(',', ':')) + '\n')
             for stream, stream_pid, stream_tid in streams:
                 for item in stream.records:
                     raw = item['raw']
@@ -550,4 +604,4 @@ def import_vv8(path: str | Path | list[str | Path], output: str | Path, *, pid: 
     return {'output': str(output), 'pid': summary[0]['pid'] if len(summary) == 1 else None,
             'tid': summary[0]['tid'] if len(summary) == 1 else None, 'streams': summary,
             'records': sum(item['records'] for item in summary),
-            'identity_source': identity_source, 'segments': len(paths)}
+            'identity_source': identity_source, 'segments': len(paths), 'source_unavailable_count': len(controls)}

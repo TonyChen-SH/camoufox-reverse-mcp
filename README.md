@@ -2,7 +2,7 @@
 
 本地采集 Camoufox 原生 API 日志，按脚本位置查看调用和返回值摘要，并通过只读 MCP 工具分析。配套浏览器源码：[camoufox-reverse](https://github.com/TonyChen-SH/camoufox-reverse)。Python 模块名为 `camoufox_trace_mcp`，避免与其他同名 Camoufox 工具混淆。
 
-历史 16 入口 pilot 已通过 Linux x86_64 真实监控浏览器与 MCP SDK stdio 联调。本次分析端扩展支持通用 WebIDL 事件；新浏览器构建与运行验证尚未完成，历史证据不代表新覆盖已验证。[下载监控浏览器并校验安装包](https://github.com/TonyChen-SH/camoufox-reverse#下载与使用)，再按下面的步骤采集。普通 Camoufox 安装包不输出这些原生事件。离线 `fixtures/` 是合成测试记录。
+支持通用 WebIDL 的读、写、方法和构造事件，已通过真实监控浏览器日志的 SDK stdio 联调。原生侧已完成 Linux x86_64 全量编译，生成清单含 1,030 个接口、9,884 个 API 名和 12,852 个操作入口；逐次完整运行门禁与下载以配套构建工作流为准。[下载监控浏览器并校验安装包](https://github.com/TonyChen-SH/camoufox-reverse#下载与使用)，再按下面的步骤采集。普通 Camoufox 安装包不输出这些原生事件。离线 `fixtures/` 是合成测试记录。
 
 ## 快速运行
 
@@ -59,11 +59,15 @@ python ../camoufox-launcher/python/scripts/pin-fpgen-model.py
 不使用自动化脚本时，也可直接采集浏览器；在窗口内复现问题并正常关闭浏览器后分析：
 
 ```bash
+trace_profile=$(mktemp -d)
 CAMOUFOX_TRACE_STACK=1 python -m camoufox_trace_mcp collect \
-  --output traces/manual.jsonl --timeout 300 -- /absolute/path/bin/camoufox-bin https://example.com
+  --output traces/manual.jsonl --timeout 300 -- /absolute/path/bin/camoufox-bin \
+  -no-remote -profile "$trace_profile" https://example.com
 python -m camoufox_trace_mcp summarize traces/manual.jsonl
 python -m camoufox_trace_mcp events traces/manual.jsonl --api HTMLCanvasElement.toDataURL --limit 20
 ```
+
+把网址换成要排查的页面。独立临时配置让这次采集使用新浏览器进程；也可按监控版安装包中的 `examples/` 启动本地回归页面，先验证链路。静态页面没有执行这些 API 时可能没有事件。
 
 超时、中断、非零/信号退出、无法启动、输出上限和 stderr 未排空都会保存在 `collection` 记录。POSIX 进程组负责回收仍在同组内的子进程；自行脱离进程组的程序不在这个保证内。关闭浏览器后采集才正常结束；到达 `--timeout` 会终止进程并返回 124。
 
@@ -111,7 +115,7 @@ python -m camoufox_trace_mcp serve --trace-root "$PWD/traces"
 
 支持原生 `schema: 1` 的 `meta`、`api`、`limit`，既可读原始 stderr 标记，也可读裸 JSONL。旧生产者的 `coverage:"binding-pilot"` 和新生产者的 `coverage:"webidl-bindings"` 均保留原值；后者描述 WebIDL 绑定覆盖，不能据此推断普通 JavaScript 函数或未经过这些绑定的内部调用均被监控。序号在原生调用入口分配，退出时写出，允许乱序；重复或缺号标为不完整。直接调用列号由生产者 metadata 声明，读取器不自行偏移。
 
-通用 WebIDL API 名采用 `Interface.member`，构造器采用 `Interface.constructor`：
+通用 WebIDL API 名采用 `Interface.member`，普通构造器采用 `Interface.constructor`；旧式工厂保留其 IDL 成员名：
 
 | 字段 | 取值与含义 |
 |---|---|
@@ -124,6 +128,7 @@ python -m camoufox_trace_mcp serve --trace-root "$PWD/traces"
 
 - `no_events`、`no_producer_metadata`、格式错误、未知 schema、上限、截断和子进程退出均会显示；空日志不证明页面没有检测。
 - URL/行列可为空；没有 frame、Worker、request ID，不能从 PID 或 realm 类名补造。栈与值只保留日志实际提供的内容。
+- `threw` 是原生绑定退出时的待处理异常状态；外层 Promise 包装器可能再把它转换为 rejected Promise，不能据此断定页面同步抛出。Promise 摘要只包含对象类名，不包含异步完成值。
 - 旧 PropertyTracer 数据须加 `--legacy`；其 `s` 为原生源码位置，不能作为 JS 位置，`v` 也不视为调用时返回值。
 - API 调用不等于风控命中。IP、账号、TLS、HTTP、行为和服务端判定无法从这份日志直接还原。
 
@@ -138,6 +143,8 @@ PYTHONPATH=src python -m unittest discover -s tests_mcp -v
 
 当前为 49 个核心测试和 1 个真实 SDK stdio 集成测试。新增回归检查四种操作、CLI/MCP 组合筛选、scope 缺失兼容，以及静态/实例返回值互换不会被合并掩盖。
 
-历史 pilot 的 [真实浏览器联调工作流](https://github.com/TonyChen-SH/camoufox-reverse/actions/runs/40895409218) 覆盖全部 16 个原生入口、22 条页面测试调用，并用四个 MCP 工具读取实际 JSONL，验证 Worker、负零与事件重排比较。[原始证据与报告](https://github.com/TonyChen-SH/camoufox-reverse/actions/runs/40895409218/artifacts/12906343755) 可下载核对；当时上游相关守卫 8/8、build-tester 1048/1048 通过。这些证据对应旧覆盖，也不等于目标网站风控原因已确定。
+已用通用监控版的 924 条真实浏览器事件验证四个工具、读写/构造/静态操作筛选、Worker、负零及重排比较。页面回归要求原有 16 个 API 与新增操作合计 35 个不同 API 名；生成入口数量与逐项实测数量分别报告。
+
+[配套构建工作流](https://github.com/TonyChen-SH/camoufox-reverse/actions/workflows/native-browser.yml) 在浏览器五种模式、完整上游补丁守卫与 build-tester 全部通过后上传 **camoufox-trace-linux-x86_64** 和 **native-browser-evidence**。从成功的通用版本运行下载报告与原始 JSONL，可核对该次验证范围。测试结果不能直接确定目标网站的风控原因。
 
 MIT License，见 [LICENSE](LICENSE)。

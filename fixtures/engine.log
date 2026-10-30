@@ -1,0 +1,8 @@
+~0x10
+@"https\://example.test/page":"https\://example.test"
+$1:"https\://example.test/probe.js":const s = "\ud83e\udd8a";\x0d\x0anavigator.userAgent;\x0a
+!1
+g17:{17,Navigator}:"userAgent"
+s17:{18,HTMLInputElement}:"value":"synthetic"
+c17:%log:{19,Console}:-0:"colon\:quote"
+n17:%URL:"https\://example.test/"

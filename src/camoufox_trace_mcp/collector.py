@@ -19,7 +19,7 @@ DEFAULT_OUTPUT_BYTES = MAX_INPUT_BYTES - 65536
 
 
 def collect(argv: list[str], output: str | Path, *, timeout: float = 60,
-            max_output_bytes: int = DEFAULT_OUTPUT_BYTES) -> dict:
+            max_output_bytes: int = DEFAULT_OUTPUT_BYTES, engine: bool = False, binding: bool = True) -> dict:
     """Run argv without a shell and save marked stderr plus a collection outcome.
 
     POSIX process groups let timeouts and interrupts clean up descendants that
@@ -50,7 +50,9 @@ def collect(argv: list[str], output: str | Path, *, timeout: float = 60,
             written += len(encoded)
 
         environment = os.environ.copy()
-        environment["CAMOUFOX_TRACE"] = "1"
+        environment["CAMOUFOX_TRACE"] = '1' if binding else '0'
+        if engine:
+            environment['CAMOUFOX_ENGINE_TRACE'] = '1'
         try:
             process = subprocess.Popen(argv, shell=False, stdin=subprocess.DEVNULL,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,

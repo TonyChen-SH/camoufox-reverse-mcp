@@ -1,0 +1,9 @@
+{"schema":1,"event":"vv8","pid":41,"tid":51,"record":1,"part":0,"final":true,"data":"~0x10"}
+{"schema":1,"event":"vv8","pid":41,"tid":51,"record":2,"part":0,"final":true,"data":"@\"https\\://example.test/page\":\"https\\://example.test\""}
+{"schema":1,"event":"vv8","pid":41,"tid":51,"record":3,"part":0,"final":false,"data":"$1:\"https\\://example.test/probe.js\":const s = \"\\ud83e\\udd8a\";\\x0d\\x0anavigator.u"}
+{"schema":1,"event":"vv8","pid":41,"tid":51,"record":3,"part":1,"final":true,"data":"serAgent;\\x0a"}
+{"schema":1,"event":"vv8","pid":41,"tid":51,"record":4,"part":0,"final":true,"data":"!1"}
+{"schema":1,"event":"vv8","pid":41,"tid":51,"record":5,"part":0,"final":true,"data":"g17:{17,Navigator}:\"userAgent\""}
+{"schema":1,"event":"vv8","pid":41,"tid":51,"record":6,"part":0,"final":true,"data":"s17:{18,HTMLInputElement}:\"value\":\"synthetic\""}
+{"schema":1,"event":"vv8","pid":41,"tid":51,"record":7,"part":0,"final":true,"data":"c17:%log:{19,Console}:-0:\"colon\\:quote\""}
+{"schema":1,"event":"vv8","pid":41,"tid":51,"record":8,"part":0,"final":true,"data":"n17:%URL:\"https\\://example.test/\""}

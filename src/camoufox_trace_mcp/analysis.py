@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from dataclasses import replace
 
 from .reader import Capture, OPERATIONS, SCOPES
 
@@ -16,6 +17,12 @@ LOSS_FLAGS = {"malformed_lines", "unsupported_schema", "unknown_events", "produc
               "reader_event_cap", "reader_record_cap", "reader_input_cap", "sequence_discontinuity",
               "child_timeout", "child_interrupted", "child_spawn_failed", "child_nonzero_exit",
               "child_signal_exit", "stderr_drain_incomplete", "collector_output_cap"}
+LOSS_FLAGS.update({'vv8_malformed_lines', 'vv8_incomplete_record', 'vv8_record_gap',
+                   'vv8_missing_context', 'vv8_unknown_parent', 'vv8_invalid_offset'})
+
+
+def _channel(event: dict) -> str:
+    return event.get('channel', 'binding')
 
 
 def _truncated(value: object) -> bool:
@@ -29,8 +36,8 @@ def statuses(capture: Capture) -> list[str]:
     if not capture.events:
         result.add("no_events")
     producer_pids = {item["pid"] for item in capture.metadata}
-    event_pids = {item["pid"] for item in capture.events if item["event"] == "api"}
-    if not producer_pids or event_pids - producer_pids:
+    event_pids = {item["pid"] for item in capture.events if item["event"] == "api" and _channel(item) == 'binding'}
+    if (not producer_pids and not capture.engine.streams) or event_pids - producer_pids:
         result.add("no_producer_metadata")
     if any(_truncated(item) for item in capture.events if item["event"] == "api"):
         result.add("value_truncation")
@@ -44,7 +51,10 @@ def _sources(capture: Capture) -> list[dict]:
     groups: Counter = Counter()
     for event in capture.events:
         units = sorted(conventions.get(event.get("pid"), {"undeclared"}))
-        key = json.dumps({"source": event["source"], "column_conventions": units}, sort_keys=True)
+        if event.get('source_column'):
+            units = [event['source_column']]
+        key = json.dumps({"source": event["source"], "column_conventions": units,
+                          'channel': _channel(event)}, sort_keys=True)
         groups[key] += 1
     return [dict(json.loads(key), count=count) for key, count in sorted(groups.items())]
 
@@ -54,9 +64,11 @@ def _call_sites(capture: Capture) -> list[dict]:
     groups = {}
     for event in capture.events:
         key = json.dumps({"api": event["api"], "op": event.get("op"),
+                          'channel': _channel(event),
                           "scope": event.get("scope"),
                           "source": event["source"],
-                          "source_column": conventions.get(event.get("pid"), "undeclared")}, sort_keys=True)
+                          'source_sha256': event.get('source_sha256'),
+                          "source_column": event.get('source_column', conventions.get(event.get("pid"), "undeclared"))}, sort_keys=True)
         group = groups.setdefault(key, {"count": 0, "results": Counter(), "examples": []})
         group["count"] += 1
         result = {"result": event.get("result", {"type": "unavailable", "reason": "legacy"}),
@@ -73,17 +85,21 @@ def _call_sites(capture: Capture) -> list[dict]:
             for key, group in sorted(groups.items())]
 
 
-def summarize(capture: Capture) -> dict:
+def summarize(capture: Capture, *, channel: str | None = None) -> dict:
+    if channel is not None:
+        if channel not in ('binding', 'engine'):
+            raise ValueError('channel must be binding or engine')
+        capture = replace(capture, events=[event for event in capture.events if _channel(event) == channel])
     flags = statuses(capture)
-    apis: dict[str, dict] = {}
+    apis: dict[tuple[str, str], dict] = {}
     for event in capture.events:
-        group = apis.setdefault(event["api"], {"api": event["api"], "count": 0,
+        group = apis.setdefault((_channel(event), event["api"]), {"api": event["api"], 'channel': _channel(event), "count": 0,
                                              "threw": 0, "truncated": 0})
         group["count"] += 1
         group["threw"] += event.get("threw") is True
         group["truncated"] += event["event"] == "api" and _truncated(event)
     producer_pids = {item["pid"] for item in capture.metadata}
-    event_pids = {item["pid"] for item in capture.events if item["event"] == "api"}
+    event_pids = {item["pid"] for item in capture.events if item["event"] == "api" and _channel(item) == 'binding'}
     return {
         "state": "observed" if capture.events else "no_events",
         "integrity": "incomplete" if set(flags) & LOSS_FLAGS else "no_known_loss",
@@ -91,6 +107,9 @@ def summarize(capture: Capture) -> dict:
         "event_count": len(capture.events),
         "native_event_count": sum(item["event"] == "api" for item in capture.events),
         "legacy_event_count": sum(item["event"] == "legacy" for item in capture.events),
+        'binding_event_count': sum(_channel(item) == 'binding' for item in capture.events),
+        'engine_event_count': sum(_channel(item) == 'engine' for item in capture.events),
+        'engine': capture.engine.summary(),
         "missing_metadata_pids": sorted(event_pids - producer_pids),
         "metadata": capture.metadata,
         "limits": capture.limits,
@@ -108,7 +127,10 @@ def summarize(capture: Capture) -> dict:
 
 def filter_events(capture: Capture, *, api: str | None = None, source_url: str | None = None,
                   pid: int | None = None, threw: bool | None = None, offset: int = 0,
-                  limit: int = 100, op: str | None = None, scope: str | None = None) -> dict:
+                  limit: int = 100, op: str | None = None, scope: str | None = None,
+                  channel: str | None = None, tid: int | None = None,
+                  isolate: str | None = None, script_id: int | None = None,
+                  property_name: str | None = None, source_offset: int | None = None) -> dict:
     if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 1000:
         raise ValueError("offset must be nonnegative and limit must be between 1 and 1000")
     if pid is not None and (type(pid) is not int or pid < 1):
@@ -119,10 +141,24 @@ def filter_events(capture: Capture, *, api: str | None = None, source_url: str |
         raise ValueError("op must be get, set, call or construct")
     if scope is not None and scope not in (*SCOPES, "unknown"):
         raise ValueError("scope must be instance, static, constructor or unknown")
+    if channel is not None and channel not in ('binding', 'engine'):
+        raise ValueError('channel must be binding or engine')
+    if tid is not None and (type(tid) is not int or tid < 1):
+        raise ValueError('tid must be a positive integer')
+    if script_id is not None and (type(script_id) is not int or script_id < 0):
+        raise ValueError('script_id must be a nonnegative integer')
+    if source_offset is not None and type(source_offset) is not int:
+        raise ValueError('source_offset must be an integer')
     matched = [event for event in capture.events
                if (api is None or event["api"] == api)
                and (op is None or event.get("op") == op)
                and (scope is None or event.get("scope", "unknown") == scope)
+               and (channel is None or _channel(event) == channel)
+               and (tid is None or event.get('tid') == tid)
+               and (isolate is None or event.get('isolate') == isolate)
+               and (script_id is None or event.get('script_id') == script_id)
+               and (property_name is None or event.get('property', {}).get('value') == property_name)
+               and (source_offset is None or event.get('source_offset') == source_offset)
                and (source_url is None or (event["source"] or {}).get("url") == source_url)
                and (pid is None or event.get("pid") == pid)
                and (threw is None or event.get("threw") is threw)]
@@ -132,11 +168,11 @@ def filter_events(capture: Capture, *, api: str | None = None, source_url: str |
             "events": matched[offset:end], "interpretation": INTERPRETATION}
 
 
-def compare_captures(baseline: Capture, candidate: Capture) -> dict:
-    left, right = summarize(baseline), summarize(candidate)
-    left_apis = {item["api"]: item["count"] for item in left["apis"]}
-    right_apis = {item["api"]: item["count"] for item in right["apis"]}
-    deltas = [{"api": api, "baseline": left_apis.get(api, 0), "candidate": right_apis.get(api, 0),
+def compare_captures(baseline: Capture, candidate: Capture, *, channel: str | None = None) -> dict:
+    left, right = summarize(baseline, channel=channel), summarize(candidate, channel=channel)
+    left_apis = {(item['channel'], item["api"]): item["count"] for item in left["apis"]}
+    right_apis = {(item['channel'], item["api"]): item["count"] for item in right["apis"]}
+    deltas = [{"channel": api[0], 'api': api[1], "baseline": left_apis.get(api, 0), "candidate": right_apis.get(api, 0),
                "delta": right_apis.get(api, 0) - left_apis.get(api, 0)}
               for api in sorted(left_apis.keys() | right_apis.keys())]
     source_counts = []
@@ -150,7 +186,7 @@ def compare_captures(baseline: Capture, candidate: Capture) -> dict:
     site_counts = []
     for report in (left, right):
         site_counts.append({json.dumps({key: item[key] for key in (
-            "api", "op", "scope", "source", "source_column")}, sort_keys=True): item
+            "channel", "api", "op", "scope", "source", "source_column", 'source_sha256')}, sort_keys=True): item
             for item in report["call_sites"]})
     changes = []
     for key in sorted(site_counts[0].keys() | site_counts[1].keys()):

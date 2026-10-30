@@ -2,6 +2,8 @@
 
 本地采集 Camoufox 原生 API 日志，按脚本位置查看调用和返回值摘要，并通过只读 MCP 工具分析。配套浏览器源码：[camoufox-reverse](https://github.com/TonyChen-SH/camoufox-reverse)。Python 模块名为 `camoufox_trace_mcp`，避免与其他同名 Camoufox 工具混淆。
 
+另支持 VisibleV8 原始日志及原生引擎分段传输：保留线程、isolate、脚本全文与 eval 来源，按线程导出标准日志。`binding` 与 `engine` 通道分别统计；原始 VV8 没有提供的返回值和异常结果保持未知。接收端已通过合成记录与真实 SDK 回归；新增原生引擎浏览器的构建和运行结果须以配套仓库证据为准，不能由本包测试推断。[完整协议与使用方法](docs/vv8.md)。
+
 支持通用 WebIDL 的读、写、方法和构造事件，已通过真实监控浏览器日志的 SDK stdio 联调。原生侧已完成 Linux x86_64 全量编译，生成清单含 1,030 个接口、9,884 个 API 名和 12,852 个操作入口；逐次完整运行门禁与下载以配套构建工作流为准。[下载监控浏览器并校验安装包](https://github.com/TonyChen-SH/camoufox-reverse#下载与使用)，再按下面的步骤采集。普通 Camoufox 安装包不输出这些原生事件。离线 `fixtures/` 是合成测试记录。
 
 ## 快速运行
@@ -18,6 +20,10 @@ python -m camoufox_trace_mcp compare fixtures/pilot.jsonl fixtures/pilot.jsonl
 python -m camoufox_trace_mcp events fixtures/webidl.jsonl --op set --scope instance
 python -m camoufox_trace_mcp events fixtures/webidl.jsonl --op construct --scope constructor
 python -m camoufox_trace_mcp events fixtures/webidl.jsonl --op call --scope static
+python -m camoufox_trace_mcp summarize fixtures/engine.jsonl --channel engine
+python -m camoufox_trace_mcp events fixtures/engine.jsonl --channel engine --op get --property-name userAgent
+python -m camoufox_trace_mcp scripts fixtures/engine.jsonl
+python -m camoufox_trace_mcp script-source fixtures/engine.jsonl --index 0
 ```
 
 摘要包括 API 次数、脚本 URL/行列、调用位置聚合、返回值摘要变体、异常与截断情况。`compare` 输出调用计数及调用位置结果摘要的差异；它不匹配同一个逻辑调用，也不把差异认定为风控原因。对象只含类名、字符串可能截断，相同摘要不能证明原值相同。
@@ -98,7 +104,7 @@ python -m camoufox_trace_mcp serve --trace-root "$PWD/traces"
 }
 ```
 
-四个只读工具：
+只读工具：
 
 | 工具 | 用途 |
 |---|---|
@@ -106,10 +112,15 @@ python -m camoufox_trace_mcp serve --trace-root "$PWD/traces"
 | `summarize_trace` | 聚合 API、脚本位置、结果摘要和采集状态 |
 | `get_trace_events` | 按 API、op、scope、URL、PID、异常筛选并分页 |
 | `compare_traces` | 比较两份日志的观察差异并保留双方限制 |
+| `get_trace_scripts` | 分页列出原生脚本注册、线程/isolate、eval 父脚本和源码哈希 |
+| `get_trace_script_source` | 按脚本列表 index 分页读取完整注册源码 |
+| `get_trace_raw_records` | 按线程查看重组后的原始 VV8 记录 |
 
-传入相对 `.jsonl` 路径，例如 `pilot.jsonl`。拒绝绝对路径、`..`、符号链接与特殊文件；逐层使用目录文件描述符和 `O_NOFOLLOW` 打开文件。MCP 不访问任意文件、不打开浏览器、不执行网页脚本。stdio 使用事件循环管道并复用 SDK 的协议处理，避免阻塞文件读取依赖工作线程唤醒。
+传入相对 `.jsonl` 或 `.log` 路径，例如 `pilot.jsonl`。拒绝绝对路径、`..`、符号链接与特殊文件；逐层使用目录文件描述符和 `O_NOFOLLOW` 打开文件。MCP 不访问任意文件、不打开浏览器、不执行网页脚本。stdio 使用事件循环管道并复用 SDK 的协议处理，避免阻塞文件读取依赖工作线程唤醒。
 
 `get_trace_events` 的 `op` 和 `scope` 取值与 CLI 相同，例如 `{"path":"webidl.jsonl","op":"call","scope":"static","limit":20}`。未传筛选项时保留所有操作与 scope；`scope:"unknown"` 可查询旧 pilot 记录。
+
+引擎查询可组合 `channel:"engine"`、`tid`、`isolate`、`script_id`、`property_name` 与 `source_offset`。`summarize_trace` 和 `compare_traces` 也可按 `channel` 筛选；不筛选时，各通道的 API 总计与调用位置仍分开。脚本源码分页的 offset 使用 Unicode 码点，事件 `source_offset` 保留 UTF-16 单位。
 
 ## 协议与解释边界
 
@@ -139,9 +150,9 @@ PYTHONPATH=src python -m unittest discover -s tests -v
 PYTHONPATH=src python -m unittest discover -s tests_mcp -v
 ```
 
-第二组需要锁文件中的 SDK，使用真实 stdio 客户端检查初始化、四个工具、结构化结果和路径拒绝。第一组覆盖独立 CLI、格式与序号、返回摘要差异、采集退出/超时及文件根目录约束；不需要浏览器。CI 缺少依赖会失败，不静默跳过。
+第二组需要锁文件中的 SDK，使用真实 stdio 客户端检查初始化、七个工具、结构化结果和路径拒绝。第一组覆盖独立 CLI、格式与序号、返回摘要差异、采集退出/超时及文件根目录约束；不需要浏览器。CI 缺少依赖会失败，不静默跳过。
 
-当前为 49 个核心测试和 1 个真实 SDK stdio 集成测试。新增回归检查四种操作、CLI/MCP 组合筛选、scope 缺失兼容，以及静态/实例返回值互换不会被合并掩盖。
+当前为 73 个核心测试和 2 个真实 SDK stdio 集成测试。覆盖四种操作、CLI/MCP 组合筛选、scope 缺失兼容、静态/实例区分，以及 VV8 分片、完整源码/参数、UTF-16 行列与孤立代理码元、跨线程/isolate、eval 来源、显式未知调用者、分段连续导入及滚段导出。SDK 测试验证全部只读工具，并逐字段恢复源码、参数、属性及 symbol token 中的原始 UTF-16 码元。
 
 [最终原生运行](https://github.com/TonyChen-SH/camoufox-reverse/actions/runs/41001689611)通过五种采集模式和真实 MCP SDK 联调；带栈采集包含 929 条事件，官方 Python 启动器采集包含 1,724 条事件。四个工具、读写/构造/静态操作筛选、Worker、负零及重排比较均通过。页面回归要求原有 16 个 API 与新增操作合计 35 个不同 API 名；生成入口数量与逐项实测数量分别报告。
 

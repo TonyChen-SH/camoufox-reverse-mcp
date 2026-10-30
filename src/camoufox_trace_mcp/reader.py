@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO, Iterable, Literal, get_args
 
+from .vv8 import EngineTrace, raw_identity
+
 MARKER = re.compile(r"(?:^|\s)CAMOUFOX_TRACE (?P<payload>.*)")
 MAX_LINE_BYTES = 1024 * 1024
 MAX_INPUT_BYTES = 64 * 1024 * 1024
@@ -139,6 +141,7 @@ class Capture:
     lines: int = 0
     ignored_lines: int = 0
     records: int = 0
+    engine: EngineTrace = field(default_factory=EngineTrace)
 
     def issue(self, line: int, status: str, reason: str) -> None:
         self.flags.add(status)
@@ -149,10 +152,15 @@ class Capture:
 
 class Reader:
     def __init__(self, *, allow_legacy: bool = False, max_events: int = MAX_EVENTS,
-                 max_records: int = MAX_RECORDS):
+                 max_records: int = MAX_RECORDS, input_format: str = 'auto', raw_name: str | None = None):
         if max_events < 1 or max_records < 1:
             raise ValueError("reader limits must be positive")
         self.capture = Capture()
+        if input_format not in ('auto', 'jsonl', 'vv8'):
+            raise ValueError('input format must be auto, jsonl or vv8')
+        self.input_format = input_format
+        self.raw_name = raw_name
+        self.capture.engine._issue = self.capture.issue
         self.allow_legacy = allow_legacy
         self.max_events = max_events
         self.max_records = max_records
@@ -161,8 +169,29 @@ class Reader:
     def add(self, line: str) -> bool:
         capture = self.capture
         capture.lines += 1
-        line = line.rstrip("\r\n")
+        line = line.removesuffix('\n').removesuffix('\r')
         marker = MARKER.search(line)
+        if self.input_format == 'auto' and line and not marker and not line.lstrip().startswith('{'):
+            if line.startswith('~') or (self.raw_name and self.raw_name.endswith('.log')):
+                self.input_format = 'vv8'
+        if self.input_format == 'vv8':
+            if not line:
+                return True
+            capture.records += 1
+            if capture.records > self.max_records:
+                capture.flags.add('reader_record_cap')
+                return False
+            stream = capture.engine.stream(*raw_identity(self.raw_name))
+            stream.identity_source = 'filename' if stream.pid is not None else 'unknown'
+            stream.last_record += 1
+            try:
+                event = capture.engine.raw(line, stream, stream.last_record, capture.lines)
+                if event is not None:
+                    self._event(event)
+            except ValueError as error:
+                stream.isolate = None
+                capture.issue(capture.lines, 'vv8_malformed_lines', str(error))
+            return True
         if marker:
             payload = marker.group("payload")
         elif line.lstrip().startswith("{"):
@@ -199,6 +228,17 @@ class Reader:
             status = "unsupported_schema" if "schema" in record else "malformed_lines"
             capture.issue(capture.lines, status, "expected native schema 1; legacy input requires --legacy")
             return True
+        if record.get('event') == 'vv8':
+            try:
+                if len(payload.encode('utf-8')) > 4096:
+                    raise ValueError('VV8 JSON envelope exceeds 4096 bytes')
+                event = capture.engine.envelope(record, capture.lines)
+                if event is not None:
+                    self._event(event)
+            except ValueError as error:
+                capture.engine.invalidate(record.get('pid'), record.get('tid'))
+                capture.issue(capture.lines, 'vv8_malformed_lines', str(error))
+            return True
         error = _native_error(record)
         if error:
             status = "unknown_events" if error == "unknown protocol-1 event" else "malformed_lines"
@@ -218,6 +258,8 @@ class Reader:
         return True
 
     def finish(self) -> Capture:
+        self.capture.engine.finish(self.capture.lines)
+        self.capture.engine._issue = None
         # Native guards allocate sequence numbers on entry and write on exit.
         for pid, seen in self._sequences.items():
             if len(seen) != max(seen):
@@ -256,8 +298,10 @@ class Reader:
 
 
 def parse_lines(lines: Iterable[str], *, allow_legacy: bool = False,
-                max_events: int = MAX_EVENTS, max_records: int = MAX_RECORDS) -> Capture:
-    reader = Reader(allow_legacy=allow_legacy, max_events=max_events, max_records=max_records)
+                max_events: int = MAX_EVENTS, max_records: int = MAX_RECORDS,
+                input_format: str = 'auto', raw_name: str | None = None) -> Capture:
+    reader = Reader(allow_legacy=allow_legacy, max_events=max_events, max_records=max_records,
+                    input_format=input_format, raw_name=raw_name)
     for line in lines:
         if len(line.encode("utf-8")) > MAX_LINE_BYTES:
             reader.capture.lines += 1
@@ -268,28 +312,31 @@ def parse_lines(lines: Iterable[str], *, allow_legacy: bool = False,
 
 
 def read_stream(stream: BinaryIO, *, allow_legacy: bool = False, max_events: int = MAX_EVENTS,
-                max_input_bytes: int = MAX_INPUT_BYTES) -> Capture:
-    if max_input_bytes < 1:
-        raise ValueError("max_input_bytes must be positive")
-    reader = Reader(allow_legacy=allow_legacy, max_events=max_events)
+                max_input_bytes: int = MAX_INPUT_BYTES, max_line_bytes: int = MAX_LINE_BYTES,
+                input_format: str = 'auto', raw_name: str | None = None,
+                _reader: Reader | None = None, _finalize: bool = True) -> Capture:
+    if max_input_bytes < 1 or max_line_bytes < 1:
+        raise ValueError("input and line byte limits must be positive")
+    reader = _reader if _reader is not None else Reader(allow_legacy=allow_legacy, max_events=max_events,
+                                                        input_format=input_format, raw_name=raw_name)
     consumed = 0
     while True:
-        chunk = stream.readline(min(MAX_LINE_BYTES + 1, max_input_bytes - consumed + 1))
+        chunk = stream.readline(min(max_line_bytes + 1, max_input_bytes - consumed + 1))
         if not chunk:
             break
         consumed += len(chunk)
         if consumed > max_input_bytes:
             reader.capture.flags.add("reader_input_cap")
             break
-        if len(chunk) > MAX_LINE_BYTES:
+        if len(chunk) > max_line_bytes:
             reader.capture.lines += 1
             reader.capture.issue(reader.capture.lines, "malformed_lines", "trace line exceeds byte limit")
             while chunk and not chunk.endswith(b"\n"):
-                chunk = stream.readline(min(MAX_LINE_BYTES + 1, max_input_bytes - consumed + 1))
+                chunk = stream.readline(min(max_line_bytes + 1, max_input_bytes - consumed + 1))
                 consumed += len(chunk)
                 if consumed > max_input_bytes:
                     reader.capture.flags.add("reader_input_cap")
-                    return reader.finish()
+                    return reader.finish() if _finalize else reader.capture
             continue
         try:
             line = chunk.decode("utf-8")
@@ -299,10 +346,11 @@ def read_stream(stream: BinaryIO, *, allow_legacy: bool = False, max_events: int
             continue
         if not reader.add(line):
             break
-    return reader.finish()
+    return reader.finish() if _finalize else reader.capture
 
 
 def read_capture(path: str | Path, **kwargs) -> Capture:
     with Path(path).open("rb") as stream:
+        kwargs.setdefault('raw_name', str(path))
         return read_stream(stream, **kwargs)
 

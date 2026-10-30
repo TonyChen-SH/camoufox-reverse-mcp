@@ -19,8 +19,8 @@ class TraceStore:
 
     def read(self, name: str, *, allow_legacy: bool = False):
         path = Path(name)
-        if not name or path.is_absolute() or ".." in path.parts or path.suffix != ".jsonl":
-            raise ValueError("trace must be a relative .jsonl path beneath the configured root")
+        if not name or path.is_absolute() or ".." in path.parts or path.suffix not in ('.jsonl', '.log'):
+            raise ValueError("trace must be a relative .jsonl or .log path beneath the configured root")
         parts = path.parts
         descriptors = []
         try:
@@ -37,7 +37,7 @@ class TraceStore:
                 raise ValueError("trace must be a regular file")
             with os.fdopen(descriptor, "rb") as stream:
                 descriptors.pop()
-                return read_stream(stream, allow_legacy=allow_legacy)
+                return read_stream(stream, allow_legacy=allow_legacy, raw_name=name)
         finally:
             for descriptor in reversed(descriptors):
                 os.close(descriptor)
@@ -61,7 +61,7 @@ class TraceStore:
                     capped = True
                     break
                 path = Path(directory) / name
-                if path.suffix == ".jsonl" and not path.is_symlink() and path.is_file():
+                if path.suffix in ('.jsonl', '.log') and not path.is_symlink() and path.is_file():
                     entries.append(path.relative_to(self.root).as_posix())
             if capped:
                 break

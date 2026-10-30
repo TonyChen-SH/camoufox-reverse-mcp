@@ -152,7 +152,7 @@ PYTHONPATH=src python -m unittest discover -s tests_mcp -v
 
 第二组需要锁文件中的 SDK，使用真实 stdio 客户端检查初始化、七个工具、结构化结果和路径拒绝。第一组覆盖独立 CLI、格式与序号、返回摘要差异、采集退出/超时及文件根目录约束；不需要浏览器。CI 缺少依赖会失败，不静默跳过。
 
-当前为 73 个核心测试和 2 个真实 SDK stdio 集成测试。覆盖四种操作、CLI/MCP 组合筛选、scope 缺失兼容、静态/实例区分，以及 VV8 分片、完整源码/参数、UTF-16 行列与孤立代理码元、跨线程/isolate、eval 来源、显式未知调用者、分段连续导入及滚段导出。SDK 测试验证全部只读工具，并逐字段恢复源码、参数、属性及 symbol token 中的原始 UTF-16 码元。
+当前为 88 个核心测试和 5 个真实 SDK stdio 集成测试。覆盖四种操作、CLI/MCP 组合筛选、scope 缺失兼容、静态/实例区分，以及 VV8 分片、完整源码/参数、UTF-16 行列与孤立代理码元、跨线程/isolate、eval 来源、显式未知调用者、producer 停止原因、来源不可得元数据的有界分页及全量 manifest 往返、分段连续导入及滚段导出。SDK 测试验证全部只读工具，并逐字段恢复源码、参数、属性及 symbol token 中的原始 UTF-16 码元。
 
 [最终原生运行](https://github.com/TonyChen-SH/camoufox-reverse/actions/runs/41001689611)通过五种采集模式和真实 MCP SDK 联调；带栈采集包含 929 条事件，官方 Python 启动器采集包含 1,724 条事件。四个工具、读写/构造/静态操作筛选、Worker、负零及重排比较均通过。页面回归要求原有 16 个 API 与新增操作合计 35 个不同 API 名；生成入口数量与逐项实测数量分别报告。
 

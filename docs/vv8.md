@@ -26,9 +26,12 @@ python -m camoufox_trace_mcp import-vv8 fixtures/engine.log --output traces/impo
 
 ```bash
 python -m camoufox_trace_mcp import-vv8 traces/vv8-export/*.log --output traces/segments.jsonl
+python -m camoufox_trace_mcp import-vv8 traces/vv8-export/*.log --manifest traces/vv8-export/manifest.json --output traces/with-source-metadata.jsonl
 ```
 
 Shell 在 CLI 侧展开输入；MCP 工具不提供路径 glob。导入按文件名 stem 分组，并按数字段号排序（2 在 10 前），拒绝缺失零段、缺段、重复段及不完整的非末段记录。每个线程的 isolate/源码注册表跨段连续，不补发 `$`。不同 stem 若复用了相同 PID/TID，必须分别导入，不能暗中合并成同一个原生线程。多线程导入保留文件名中的 ID；`--pid/--tid` 覆盖只允许用于单线程 cluster。
+
+`--manifest` 显式恢复导出时附带的 `source_unavailable` 控制元数据；原始标准 VV8 文件本身不承载这些原因。manifest 的段文件清单必须与显式输入相同，且不能声明已知丢失。携带来源元数据时不能覆盖 PID/TID，避免把原生来源重新归属给其他线程。MCP 不读取任意 manifest 路径。
 
 导出默认在累计字节超过 1,000,000,000 后，为下一条完整记录开启新段。记录不在中间拆开，单条长记录可能使一段超过阈值。可用 `export-vv8 ... --segment-bytes 4096` 设置小阈值；manifest 为各段保留段号、字节数、记录数、首末逻辑记录号、PID/TID 与 ID 来源。
 
@@ -43,6 +46,14 @@ Shell 在 CLI 侧展开输入；MCP 工具不提供路径 glob。导入按文件
 同样使用 `CAMOUFOX_TRACE ` 前缀。`pid/tid/record` 是正整数，`record` 是每线程逻辑记录计数，`part` 从零连续递增，`final` 为布尔值。`data` 是原始 VV8 记录的 ASCII 片段，完整记录不含最终换行。每个 JSON envelope 至多 4096 字节。按 `(pid,tid,record)` 严格重组，允许不同线程交错。
 
 重复、逆序、缺段、缺记录、非法类型、非法转义、跨 isolate 的未知脚本引用和不完整结束都有明确状态。已知损坏或采集丢失时拒绝完整导出。完整尾部记录若在传输前整体消失，且没有后续计数或结束清单，仍可能无法识别；`no_known_loss` 不等于绝对无丢失。
+
+引擎 `limit` 记录的原因会保留在摘要 `limits` 中。`channel:"engine",reason:"engine_record_cap"` 标为 `producer_event_cap`；其他引擎停止原因（例如 `engine_source_or_context`、`engine_value`、`engine_transport`），以及未知或缺失原因，标为 `producer_stopped`。两种状态都表示已知丢失，`integrity` 为 `incomplete`，分析退出码为 65，并拒绝完整导出。旧 binding `limit` 及其无效上限报告仍沿用 `producer_event_cap`。显式未知调用者的 `provenance_unknown` 自身不属于丢失。
+
+`event:"source_unavailable"` 是来源可用性的控制记录，包含 `schema:1,channel:"engine",pid,tid,source_id,reason,filename,introduction_type,retrievable`。`source_id` 保留原生 `ScriptSource::id()` 的 uint32 值；filename/introduction_type 可为 null。可选 `scope:"source"|"introduction"`、`introduction_source_id` 及截断布尔值也原样保存。常见原因是 `source_missing`、`source_not_loaded` 和 `introduction_cycle`，后续原因不按固定枚举丢弃。
+
+来源不可得不等于传输损坏：当前脚本可以保持 `!?`，完整 child 脚本可用 `$child:#?` 表示未知祖先；读取器不编造空源码。摘要的 `engine` 区、事件/脚本/源码/原始记录分页返回 `source_unavailable` 和捕获级 `source_provenance_complete`。`source_provenance_scope:"observed_engine_sources"` 明确其范围仅为已观察引擎记录的来源；binding-only 或没有任何真实 `$` 源码注册的 capture 为 false，true 也不表示所有脚本或浏览器 API 均被覆盖。该标志在存在不可用记录、未知调用者或未知祖先时为 false；即使后续成功取回源码，也保留历史不可用记录。有效控制记录自身不属于已知丢失，完整 raw 导出可保留 `!?/#?`，并在 manifest 附上控制元数据。控制记录或 manifest 不会替代 `$` 注册：真正未知的 `!ID`、缺失当前脚本或未知数字父 ID 仍是已知丢失并拒绝导入/完整导出。真正的 source load/OOM 等失败仍使用 `limit` 并按 `producer_stopped` 拒绝完整导出。
+
+摘要、事件、raw 和源码页最多预览 100 条 `source_unavailable`，同时返回总数 `source_unavailable_count`；`source_unavailable_limited` 表示本响应没有包含全部控制记录。`get_trace_scripts` 使用同一请求的 offset/limit 分页不可用来源，并单独返回 `source_unavailable_matched`、`source_unavailable_offset`、`source_unavailable_limit` 和 `source_unavailable_next_offset`；依次使用该游标直至 null 可读全，原 scripts/matched/next_offset 仍只代表实际注册脚本。导出 manifest 使用全量模式保留全部控制记录，count 为总数、limited 为 false。
 
 默认读入上限仍为 64 MiB、单行 1 MiB、事件 100000、传输记录 200000；一个重组的逻辑记录最多 64 MiB。`--max-input-bytes`、`--max-line-bytes`、`--max-events` 可显式调整读取限制。原生分段可承载超过单行限制的完整源码；直接导入极大的旧 VV8 源码行可能需要提高单行上限。达到上限会报告不完整，不静默截成完整日志。
 

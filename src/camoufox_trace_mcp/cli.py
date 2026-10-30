@@ -72,6 +72,7 @@ def _parser() -> argparse.ArgumentParser:
     importer.add_argument('--output', required=True)
     importer.add_argument('--pid', type=int)
     importer.add_argument('--tid', type=int)
+    importer.add_argument('--manifest', help='explicit export manifest preserving source-unavailable metadata')
     collector = commands.add_parser("collect", help="run explicit local argv and save marked stderr")
     collector.add_argument("--output", required=True, help="new JSONL file; existing files are refused")
     collector.add_argument("--timeout", type=float, default=60)
@@ -108,7 +109,8 @@ def main(argv: list[str] | None = None) -> int:
             report["output"] = arguments.output
             code = collection_exit_code(outcome, analysis_exit_code(capture))
         elif arguments.command == 'import-vv8':
-            report = import_vv8(arguments.path, arguments.output, pid=arguments.pid, tid=arguments.tid)
+            report = import_vv8(arguments.path, arguments.output, pid=arguments.pid, tid=arguments.tid,
+                                manifest=arguments.manifest)
             code = 0
         else:
             options = {"allow_legacy": arguments.legacy, "max_events": arguments.max_events,

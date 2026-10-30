@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 
-from .reader import Capture
+from .reader import Capture, OPERATIONS, SCOPES
 
 INTERPRETATION = (
     "Observed API activity only. Empty traces do not establish absence of detection. "
@@ -54,6 +54,7 @@ def _call_sites(capture: Capture) -> list[dict]:
     groups = {}
     for event in capture.events:
         key = json.dumps({"api": event["api"], "op": event.get("op"),
+                          "scope": event.get("scope"),
                           "source": event["source"],
                           "source_column": conventions.get(event.get("pid"), "undeclared")}, sort_keys=True)
         group = groups.setdefault(key, {"count": 0, "results": Counter(), "examples": []})
@@ -107,15 +108,21 @@ def summarize(capture: Capture) -> dict:
 
 def filter_events(capture: Capture, *, api: str | None = None, source_url: str | None = None,
                   pid: int | None = None, threw: bool | None = None, offset: int = 0,
-                  limit: int = 100) -> dict:
+                  limit: int = 100, op: str | None = None, scope: str | None = None) -> dict:
     if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 1000:
         raise ValueError("offset must be nonnegative and limit must be between 1 and 1000")
     if pid is not None and (type(pid) is not int or pid < 1):
         raise ValueError("pid must be a positive integer")
     if threw is not None and type(threw) is not bool:
         raise ValueError("threw must be a boolean")
+    if op is not None and op not in OPERATIONS:
+        raise ValueError("op must be get, set, call or construct")
+    if scope is not None and scope not in (*SCOPES, "unknown"):
+        raise ValueError("scope must be instance, static, constructor or unknown")
     matched = [event for event in capture.events
                if (api is None or event["api"] == api)
+               and (op is None or event.get("op") == op)
+               and (scope is None or event.get("scope", "unknown") == scope)
                and (source_url is None or (event["source"] or {}).get("url") == source_url)
                and (pid is None or event.get("pid") == pid)
                and (threw is None or event.get("threw") is threw)]
@@ -143,7 +150,7 @@ def compare_captures(baseline: Capture, candidate: Capture) -> dict:
     site_counts = []
     for report in (left, right):
         site_counts.append({json.dumps({key: item[key] for key in (
-            "api", "op", "source", "source_column")}, sort_keys=True): item
+            "api", "op", "scope", "source", "source_column")}, sort_keys=True): item
             for item in report["call_sites"]})
     changes = []
     for key in sorted(site_counts[0].keys() | site_counts[1].keys()):

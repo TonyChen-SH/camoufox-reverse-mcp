@@ -5,9 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 import asyncio
 import sys
-from typing import Any
+from typing import Any, Literal
 
 from .analysis import INTERPRETATION, compare_captures, filter_events, summarize
+from .reader import Operation, Scope
 from .store import TraceStore
 
 
@@ -62,10 +63,15 @@ def create_server(trace_root: str | Path, *, allow_legacy: bool = False):
     @server.tool(annotations=annotations)
     def get_trace_events(path: str, api: str | None = None, source_url: str | None = None,
                          pid: int | None = None, threw: bool | None = None,
-                         offset: int = 0, limit: int = 100) -> dict[str, Any]:
-        """Filter observed events by exact API, URL, PID or exception state; paginate."""
+                         offset: int = 0, limit: int = 100, op: Operation | None = None,
+                         scope: Scope | Literal["unknown"] | None = None) -> dict[str, Any]:
+        """Filter exact API, operation, member scope, URL, PID or exception state; paginate.
+
+        Scope unknown selects older records that do not declare a member scope.
+        """
         return filter_events(store.read(path, allow_legacy=allow_legacy), api=api,
-                             source_url=source_url, pid=pid, threw=threw, offset=offset, limit=limit)
+                             source_url=source_url, pid=pid, threw=threw, offset=offset, limit=limit,
+                             op=op, scope=scope)
 
     @server.tool(annotations=annotations)
     def compare_traces(baseline: str, candidate: str) -> dict[str, Any]:

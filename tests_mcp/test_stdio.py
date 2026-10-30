@@ -30,7 +30,8 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         await session.initialize()
                         tools = (await session.list_tools()).tools
                         self.assertEqual({tool.name for tool in tools}, {
-                            "list_traces", "summarize_trace", "get_trace_events", "compare_traces"})
+                            "list_traces", "summarize_trace", "get_trace_events", "compare_traces",
+                            'get_trace_scripts', 'get_trace_script_source', 'get_trace_raw_records'})
                         self.assertTrue(all(tool.annotations.readOnlyHint for tool in tools))
                         listing = await session.call_tool("list_traces", {})
                         self.assertFalse(listing.isError)
@@ -71,6 +72,46 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             rejected = await session.call_tool("get_trace_events", {
                                 "path": "webidl.jsonl", **arguments})
                             self.assertTrue(rejected.isError)
+                        (trace_root / 'engine.jsonl').write_bytes((ROOT / 'fixtures/engine.jsonl').read_bytes())
+                        engine = await session.call_tool('summarize_trace', {'path': 'engine.jsonl', 'channel': 'engine'})
+                        self.assertFalse(engine.isError)
+                        self.assertEqual(engine.structuredContent['engine_event_count'], 4)
+                        scripts = await session.call_tool('get_trace_scripts', {'path': 'engine.jsonl'})
+                        self.assertFalse(scripts.isError)
+                        self.assertEqual(scripts.structuredContent['scripts'][0]['script_id'], 1)
+                        source = await session.call_tool('get_trace_script_source', {
+                            'path': 'engine.jsonl', 'index': 0, 'limit': 1000})
+                        self.assertIn('🦊', source.structuredContent['source'])
+                        selected = await session.call_tool('get_trace_events', {
+                            'path': 'engine.jsonl', 'channel': 'engine', 'op': 'get', 'pid': 41,
+                            'tid': 51, 'isolate': '0x10', 'script_id': 1, 'property_name': 'userAgent'})
+                        self.assertEqual(selected.structuredContent['matched'], 1)
+                        event = selected.structuredContent['events'][0]
+                        self.assertEqual(event['source']['line'], 2)
+                        self.assertEqual(event['result']['reason'], 'not_observed')
+                        self.assertIsNone(event['threw'])
+                        raw = await session.call_tool('get_trace_raw_records', {'path': 'engine.jsonl', 'tid': 51})
+                        self.assertEqual(raw.structuredContent['matched'], 8)
+                        self.assertTrue(raw.structuredContent['records'][0]['raw'].startswith('~'))
+                        unchanged = await session.call_tool('compare_traces', {
+                            'baseline': 'engine.jsonl', 'candidate': 'engine.jsonl', 'channel': 'engine'})
+                        self.assertEqual(unchanged.structuredContent['call_site_changes'], [])
+                        rejected = await session.call_tool('get_trace_script_source', {
+                            'path': 'engine.jsonl', 'index': -1})
+                        self.assertTrue(rejected.isError)
+                        unknown_rows = [dict(schema=1, event='vv8', pid=41, tid=51,
+                                             record=index, part=0, final=True, data=raw)
+                                        for index, raw in enumerate(['~a', '@?', '!?', 'c-1:%native:#U'], 1)]
+                        (trace_root / 'unknown.jsonl').write_text(
+                            ''.join(json.dumps(row) + '\n' for row in unknown_rows))
+                        unknown = await session.call_tool('summarize_trace', {'path': 'unknown.jsonl'})
+                        self.assertFalse(unknown.isError)
+                        self.assertEqual(unknown.structuredContent['integrity'], 'no_known_loss')
+                        self.assertIn('provenance_unknown', unknown.structuredContent['statuses'])
+                        unknown_events = await session.call_tool('get_trace_events', {
+                            'path': 'unknown.jsonl', 'channel': 'engine'})
+                        self.assertIsNone(unknown_events.structuredContent['events'][0]['script_id'])
+                        self.assertTrue(unknown_events.structuredContent['events'][0]['provenance_unknown'])
 
 
 if __name__ == "__main__":

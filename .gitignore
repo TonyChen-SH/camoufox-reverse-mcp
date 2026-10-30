@@ -6,3 +6,4 @@ build/
 dist/
 traces/
 *.log
+!fixtures/*.log

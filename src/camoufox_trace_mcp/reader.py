@@ -9,7 +9,7 @@ import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import BinaryIO, Iterable
+from typing import BinaryIO, Iterable, Literal, get_args
 
 MARKER = re.compile(r"(?:^|\s)CAMOUFOX_TRACE (?P<payload>.*)")
 MAX_LINE_BYTES = 1024 * 1024
@@ -17,6 +17,10 @@ MAX_INPUT_BYTES = 64 * 1024 * 1024
 MAX_EVENTS = 100_000
 MAX_RECORDS = 200_000
 MAX_ISSUES = 50
+Operation = Literal["get", "set", "call", "construct"]
+Scope = Literal["instance", "static", "constructor"]
+OPERATIONS = get_args(Operation)
+SCOPES = get_args(Scope)
 
 
 def _integer(value: object, minimum: int = 0) -> bool:
@@ -73,6 +77,10 @@ def _native_error(record: dict) -> str | None:
         return "seq and mono_us must be nonnegative integers; seq starts at 1"
     if not all(isinstance(record[key], str) and record[key] for key in ("api", "op")):
         return "api and op must be nonempty strings"
+    if record["op"] not in OPERATIONS:
+        return "op must be get, set, call or construct"
+    if "scope" in record and record["scope"] not in SCOPES:
+        return "scope must be instance, static or constructor when present"
     source = record["source"]
     if source is not None:
         if not isinstance(source, dict) or not {"url", "line", "column"}.issubset(source):

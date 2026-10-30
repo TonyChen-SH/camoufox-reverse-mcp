@@ -48,6 +48,29 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             self.assertTrue(rejected.isError)
                         no_executor = await session.call_tool("collect", {"argv": ["true"]})
                         self.assertTrue(no_executor.isError)
+                        (trace_root / "webidl.jsonl").write_bytes((ROOT / "fixtures" / "webidl.jsonl").read_bytes())
+                        generic = await session.call_tool("summarize_trace", {"path": "webidl.jsonl"})
+                        self.assertFalse(generic.isError)
+                        self.assertEqual(generic.structuredContent["metadata"][0]["coverage"], "webidl-bindings")
+                        self.assertEqual({site["scope"] for site in generic.structuredContent["call_sites"]},
+                                         {"instance", "static", "constructor"})
+                        for operation, expected in (("get", 1), ("set", 1), ("call", 2), ("construct", 1)):
+                            selected = await session.call_tool("get_trace_events", {
+                                "path": "webidl.jsonl", "op": operation})
+                            self.assertFalse(selected.isError)
+                            self.assertEqual(selected.structuredContent["matched"], expected)
+                            self.assertTrue(all(event["op"] == operation
+                                                for event in selected.structuredContent["events"]))
+                        static = await session.call_tool("get_trace_events", {
+                            "path": "webidl.jsonl", "op": "call", "scope": "static"})
+                        self.assertEqual(static.structuredContent["events"][0]["api"], "URL.canParse")
+                        unknown = await session.call_tool("get_trace_events", {
+                            "path": "pilot.jsonl", "scope": "unknown"})
+                        self.assertEqual(unknown.structuredContent["matched"], 3)
+                        for arguments in ({"op": "read"}, {"scope": "global"}):
+                            rejected = await session.call_tool("get_trace_events", {
+                                "path": "webidl.jsonl", **arguments})
+                            self.assertTrue(rejected.isError)
 
 
 if __name__ == "__main__":

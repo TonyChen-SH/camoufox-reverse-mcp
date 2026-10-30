@@ -9,7 +9,7 @@ import sys
 
 from .analysis import analysis_exit_code, compare_captures, filter_events, summarize
 from .collector import DEFAULT_OUTPUT_BYTES, collect, collection_exit_code
-from .reader import MAX_EVENTS, read_capture
+from .reader import MAX_EVENTS, OPERATIONS, SCOPES, read_capture
 
 
 def _reader_options(parser: argparse.ArgumentParser) -> None:
@@ -27,6 +27,9 @@ def _parser() -> argparse.ArgumentParser:
     events.add_argument("path")
     _reader_options(events)
     events.add_argument("--api")
+    events.add_argument("--op", choices=OPERATIONS, help="exact WebIDL operation")
+    events.add_argument("--scope", choices=(*SCOPES, "unknown"),
+                        help="member scope; unknown selects records without a scope")
     events.add_argument("--source-url")
     events.add_argument("--pid", type=int)
     events.add_argument("--threw", choices=("true", "false"))
@@ -84,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
                     threw = None if arguments.threw is None else arguments.threw == "true"
                     report = filter_events(capture, api=arguments.api, source_url=arguments.source_url,
                                            pid=arguments.pid, threw=threw, offset=arguments.offset,
-                                           limit=arguments.limit)
+                                           limit=arguments.limit, op=arguments.op, scope=arguments.scope)
         print(json.dumps(report, ensure_ascii=True, sort_keys=True, indent=2))
         return code
     except (ValueError, OSError) as error:

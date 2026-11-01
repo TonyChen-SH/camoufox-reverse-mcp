@@ -137,6 +137,17 @@ class ReaderTests(unittest.TestCase):
         self.assertIn("reader_record_cap", limited.flags)
         self.assertEqual(len(limited.events), 1)
 
+    def test_public_reader_record_budget_is_effective_and_reported(self):
+        for reader in (lambda **kw: read_capture(FIXTURE, **kw),
+                       lambda **kw: read_stream(io.BytesIO(FIXTURE.read_bytes()), **kw)):
+            result = reader(max_records=2)
+            self.assertEqual(len(result.events), 1)
+            self.assertIn('reader_record_cap', result.flags)
+            self.assertEqual(summarize(result)['reader_limits']['max_records'], 2)
+            for invalid in (0, -1, True, 2.5):
+                with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                    reader(max_records=invalid)
+
     def test_truncation_of_values_is_explicit(self):
         event = copy.deepcopy(RECORDS[1])
         event["result"]["truncated"] = True
@@ -183,6 +194,22 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(sum(item["delta"] for item in result["source_count_deltas"]), 2)
         self.assertEqual(result["baseline"]["event_count"], 1)
         self.assertIn("not matched calls", result["comparison"])
+
+    def test_context_grouping_separates_same_source_in_different_origins(self):
+        events = [dict(RECORDS[1], seq=n, origin=origin, tid=1, isolate='a', script_id=1)
+                  for n, origin in enumerate(('https://a.test', 'https://b.test'), 1)]
+        result = capture(RECORDS[0], *events)
+        self.assertEqual(len(summarize(result)['call_sites']), 1)
+        report = summarize(result, call_site_grouping='context')
+        self.assertEqual(report['call_site_grouping'], 'context')
+        self.assertEqual(len(report['call_sites']), 2)
+        self.assertEqual({site['context']['origin'] for site in report['call_sites']},
+                         {'https://a.test', 'https://b.test'})
+        other = capture(RECORDS[0], dict(events[0], origin='https://c.test'))
+        changes = compare_captures(result, other, call_site_grouping='context')['call_site_changes']
+        self.assertEqual(len(changes), 3)
+        with self.assertRaises(ValueError):
+            summarize(result, call_site_grouping='invented')
 
     def test_changed_return_at_same_call_site_is_visible(self):
         changed = copy.deepcopy(RECORDS)

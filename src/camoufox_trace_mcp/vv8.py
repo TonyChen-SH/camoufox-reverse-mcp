@@ -179,7 +179,10 @@ class EngineTrace:
             if number <= stream.last_record:
                 raise ValueError('duplicate or reversed VV8 record counter')
             if number != stream.last_record + 1:
-                self._error(line, 'vv8_record_gap', 'nonconsecutive per-thread VV8 record counter')
+                self._error(line, 'vv8_record_gap',
+                            f'nonconsecutive VV8 record counter: pid={stream.pid} tid={stream.tid} '
+                            f'expected={stream.last_record + 1} observed={number} '
+                            f'missing={number - stream.last_record - 1}')
                 stream.isolate = None
             stream.pending_record = number
         if stream.pending_record != number or part != len(stream.parts):

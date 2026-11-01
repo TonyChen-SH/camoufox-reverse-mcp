@@ -8,7 +8,7 @@ import json
 import sys
 
 from .analysis import analysis_exit_code, compare_captures, filter_events, summarize
-from .collector import DEFAULT_OUTPUT_BYTES, collect, collection_exit_code
+from .collector import DEFAULT_OUTPUT_BYTES, DEFAULT_RAW_STDERR_BYTES, collect, collection_exit_code
 from .reader import MAX_EVENTS, MAX_INPUT_BYTES, MAX_LINE_BYTES, OPERATIONS, SCOPES, read_capture
 from .vv8 import DEFAULT_SEGMENT_BYTES, export_vv8, import_vv8, raw_records_page, script_source, scripts_page
 
@@ -77,6 +77,9 @@ def _parser() -> argparse.ArgumentParser:
     collector.add_argument("--output", required=True, help="new JSONL file; existing files are refused")
     collector.add_argument("--timeout", type=float, default=60)
     collector.add_argument("--max-output-bytes", type=int, default=DEFAULT_OUTPUT_BYTES)
+    collector.add_argument('--raw-stderr', help='new private file retaining exact stderr bytes (mode 0600)')
+    collector.add_argument('--max-raw-stderr-bytes', type=int, default=DEFAULT_RAW_STDERR_BYTES,
+                           help='private stderr byte cap; incomplete evidence exits 65')
     collector.add_argument('--engine', action='store_true', help='enable CAMOUFOX_ENGINE_TRACE')
     collector.add_argument('--no-bindings', action='store_true', help='disable the binding trace channel')
     collector.add_argument("argv", nargs=argparse.REMAINDER, help="-- command arg ... (never a shell)")
@@ -103,7 +106,9 @@ def main(argv: list[str] | None = None) -> int:
                 command = command[1:]
             outcome = collect(command, arguments.output, timeout=arguments.timeout,
                               max_output_bytes=arguments.max_output_bytes,
-                              engine=arguments.engine, binding=not arguments.no_bindings)
+                              engine=arguments.engine, binding=not arguments.no_bindings,
+                              raw_stderr_path=arguments.raw_stderr,
+                              max_raw_stderr_bytes=arguments.max_raw_stderr_bytes)
             capture = read_capture(arguments.output)
             report = summarize(capture)
             report["output"] = arguments.output

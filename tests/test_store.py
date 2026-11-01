@@ -29,6 +29,17 @@ class TraceStoreTests(unittest.TestCase):
         self.assertEqual(listing["next_offset"], 1)
         self.assertEqual(self.store.list(offset=1)["traces"], ["nested/other.jsonl"])
 
+    def test_trusted_constructor_controls_reader_budget(self):
+        store = TraceStore(self.root, max_records=2, max_events=1,
+                           max_input_bytes=4096, max_line_bytes=2048)
+        result = store.read('capture.jsonl')
+        self.assertEqual(len(result.events), 1)
+        self.assertIn('reader_record_cap', result.flags)
+        self.assertEqual(result.reader_limits, {'max_records': 2, 'max_events': 1,
+                         'max_input_bytes': 4096, 'max_line_bytes': 2048})
+        with self.assertRaises(ValueError):
+            TraceStore(self.root, max_records=True)
+
     def test_absolute_parent_and_wrong_extension_are_refused(self):
         for name in (str(self.directory / "outside.jsonl"), "../outside.jsonl",
                      "nested/../../outside.jsonl", "capture.txt", ""):

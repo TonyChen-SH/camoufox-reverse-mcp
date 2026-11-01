@@ -39,6 +39,26 @@ def capture(records):
 
 
 class Vv8Tests(unittest.TestCase):
+    def test_issue_preview_preserves_first_loss_after_many_unknown_sources(self):
+        records = envelopes(['~a', '!?'] + ['g0:{1,Window}:"x"'] * 60 + ['@?', '!1', 'g0:{1,Window}:"x"'])
+        del records[62]
+        result = capture(records)
+        report = summarize(result)
+        self.assertEqual(len(report['issues']), 50)
+        self.assertTrue(all(issue['status'] == 'provenance_unknown' for issue in report['issues']))
+        self.assertEqual(report['issue_counts']['provenance_unknown'], 60)
+        self.assertEqual(report['issue_counts']['vv8_record_gap'], 1)
+        self.assertEqual(report['issue_counts']['vv8_missing_context'], 3)
+        self.assertEqual(report['first_loss_issue']['status'], 'vv8_record_gap')
+        self.assertIn('expected=63 observed=64 missing=1', report['first_loss_issue']['reason'])
+        self.assertEqual(report['integrity'], 'incomplete')
+        self.assertIn('vv8_missing_context', report['loss_statuses'])
+        self.assertEqual(len(report['issue_samples']['provenance_unknown']), 3)
+        self.assertEqual(report['issue_samples_limited'], ['provenance_unknown'])
+        self.assertIsNone(result.events[-1]['isolate'])
+        self.assertIsNone(result.events[-1]['source'])
+        self.assertEqual(result.events[-1]['vv8_raw'], 'g0:{1,Window}:"x"')
+
     def test_source_hash_preserves_lone_units_and_declares_its_byte_encoding(self):
         result = capture(envelopes(['~a', '@?', '$1:"edge.js":A\\ud800B\\udfffC\\ud83e\\udd8a',
                                     '!1', 'g3:{1,Window}:"x"']))

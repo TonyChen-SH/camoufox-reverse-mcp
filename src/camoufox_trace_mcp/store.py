@@ -6,11 +6,17 @@ import os
 import stat
 from pathlib import Path
 
-from .reader import read_stream
+from .reader import MAX_EVENTS, MAX_RECORDS, MAX_INPUT_BYTES, MAX_LINE_BYTES, read_stream
 
 
 class TraceStore:
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | Path, *, max_events: int = MAX_EVENTS,
+                 max_records: int = MAX_RECORDS, max_input_bytes: int = MAX_INPUT_BYTES,
+                 max_line_bytes: int = MAX_LINE_BYTES):
+        self.reader_limits = dict(max_events=max_events, max_records=max_records,
+                                  max_input_bytes=max_input_bytes, max_line_bytes=max_line_bytes)
+        if any(type(value) is not int or value < 1 for value in self.reader_limits.values()):
+            raise ValueError("reader limits must be positive integers")
         self.root = Path(root).resolve(strict=True)
         if not self.root.is_dir():
             raise ValueError("trace root must be a directory")
@@ -37,7 +43,7 @@ class TraceStore:
                 raise ValueError("trace must be a regular file")
             with os.fdopen(descriptor, "rb") as stream:
                 descriptors.pop()
-                return read_stream(stream, allow_legacy=allow_legacy, raw_name=name)
+                return read_stream(stream, allow_legacy=allow_legacy, raw_name=name, **self.reader_limits)
         finally:
             for descriptor in reversed(descriptors):
                 os.close(descriptor)

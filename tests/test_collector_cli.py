@@ -167,6 +167,20 @@ class CliTests(unittest.TestCase):
             self.assertEqual(result.returncode, 65)
             self.assertIn("malformed_lines", json.loads(result.stdout)["statuses"])
 
+    def test_collect_private_raw_stderr_is_opt_in_and_cap_failure_is_explicit(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            output = Path(directory) / 'capture.jsonl'
+            raw = Path(directory) / 'private.stderr'
+            result = self.run_cli('collect', '--output', output, '--raw-stderr', raw,
+                                  '--max-raw-stderr-bytes', 7, '--', sys.executable, 'fixtures/replay.py')
+            self.assertEqual(result.returncode, 65, result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual(report['collections'][0]['raw_stderr']['status'], 'byte_limit')
+            self.assertEqual(raw.stat().st_size, 7)
+            self.assertEqual(report['event_count'], 3)
+            self.assertNotIn(str(raw), result.stdout)
+            self.assertNotIn('unrelated child stderr', result.stdout)
+
     def test_core_runs_without_site_packages_or_mcp(self):
         environment = dict(os.environ, PYTHONPATH=str(ROOT / "src"))
         result = subprocess.run([sys.executable, "-S", "-m", "camoufox_trace_mcp", "summarize", str(FIXTURE)],

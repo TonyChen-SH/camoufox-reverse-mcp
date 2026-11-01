@@ -7,7 +7,8 @@ import tempfile
 import unittest
 
 from camoufox_trace_mcp import read_capture, summarize
-from camoufox_trace_mcp.vv8 import export_vv8, import_vv8
+from camoufox_trace_mcp.vv8 import export_vv8, import_vv8, read_vv8_segments
+from camoufox_trace_mcp.reader import MAX_INPUT_BYTES
 from test_vv8 import ROOT, RAW, SOURCE, OFFSET, capture, envelopes
 
 
@@ -34,6 +35,11 @@ class Vv8SegmentTests(unittest.TestCase):
         self.assertEqual(result.engine.scripts[0]['source'], SOURCE)
         self.assertTrue(all(event['script_id'] == 1 and event['source']['line'] == 2
                             for event in result.events))
+
+    def test_segment_budget_reports_whole_capture_limit(self):
+        paths = [self.segment(0, RAW[:4]), self.segment(1, RAW[4:])]
+        result = read_vv8_segments(paths)
+        self.assertEqual(result.reader_limits['max_input_bytes'], MAX_INPUT_BYTES)
 
     def test_multiple_thread_clusters_keep_separate_registries(self):
         paths = [self.segment(1, RAW[4:]), self.segment(0, RAW[:4]),

@@ -59,16 +59,20 @@ def _sources(capture: Capture) -> list[dict]:
     return [dict(json.loads(key), count=count) for key, count in sorted(groups.items())]
 
 
-def _call_sites(capture: Capture) -> list[dict]:
+def _call_sites(capture: Capture, grouping: str) -> list[dict]:
     conventions = {item["pid"]: item["source_column"] for item in capture.metadata}
     groups = {}
     for event in capture.events:
-        key = json.dumps({"api": event["api"], "op": event.get("op"),
-                          'channel': _channel(event),
-                          "scope": event.get("scope"),
-                          "source": event["source"],
-                          'source_sha256': event.get('source_sha256'),
-                          "source_column": event.get('source_column', conventions.get(event.get("pid"), "undeclared"))}, sort_keys=True)
+        site = {"api": event["api"], "op": event.get("op"),
+                'channel': _channel(event),
+                "scope": event.get("scope"),
+                "source": event["source"],
+                'source_sha256': event.get('source_sha256'),
+                "source_column": event.get('source_column', conventions.get(event.get("pid"), "undeclared"))}
+        if grouping == 'context':
+            site['context'] = {name: event.get(name) for name in (
+                'pid', 'tid', 'isolate', 'script_id', 'origin', 'security_token', 'realm_class')}
+        key = json.dumps(site, sort_keys=True)
         group = groups.setdefault(key, {"count": 0, "results": Counter(), "examples": []})
         group["count"] += 1
         result = {"result": event.get("result", {"type": "unavailable", "reason": "legacy"}),
@@ -85,7 +89,10 @@ def _call_sites(capture: Capture) -> list[dict]:
             for key, group in sorted(groups.items())]
 
 
-def summarize(capture: Capture, *, channel: str | None = None) -> dict:
+def summarize(capture: Capture, *, channel: str | None = None,
+              call_site_grouping: str = 'source') -> dict:
+    if call_site_grouping not in ('source', 'context'):
+        raise ValueError('call_site_grouping must be source or context')
     if channel is not None:
         if channel not in ('binding', 'engine'):
             raise ValueError('channel must be binding or engine')
@@ -104,6 +111,10 @@ def summarize(capture: Capture, *, channel: str | None = None) -> dict:
         "state": "observed" if capture.events else "no_events",
         "integrity": "incomplete" if set(flags) & LOSS_FLAGS else "no_known_loss",
         "statuses": flags,
+        "loss_statuses": sorted(set(flags) & LOSS_FLAGS),
+        "first_loss_issue": min((samples[0] for status, samples in capture.issue_samples.items()
+                                  if status in LOSS_FLAGS and samples),
+                                 key=lambda issue: issue['line'], default=None),
         "event_count": len(capture.events),
         "native_event_count": sum(item["event"] == "api" for item in capture.events),
         "legacy_event_count": sum(item["event"] == "legacy" for item in capture.events),
@@ -116,11 +127,16 @@ def summarize(capture: Capture, *, channel: str | None = None) -> dict:
         "collections": capture.collections,
         "input": {"lines": capture.lines, "ignored_lines": capture.ignored_lines,
                   "records": capture.records},
+        "reader_limits": capture.reader_limits,
         "issue_counts": dict(sorted(capture.issue_counts.items())),
+        "issue_samples": dict(sorted(capture.issue_samples.items())),
+        "issue_samples_limited": sorted(status for status, count in capture.issue_counts.items()
+                                        if count > len(capture.issue_samples.get(status, []))),
         "issues": capture.issues,
         "apis": [apis[key] for key in sorted(apis)],
         "sources": _sources(capture),
-        "call_sites": _call_sites(capture),
+        "call_site_grouping": call_site_grouping,
+        "call_sites": _call_sites(capture, call_site_grouping),
         "interpretation": INTERPRETATION,
     }
 
@@ -169,8 +185,10 @@ def filter_events(capture: Capture, *, api: str | None = None, source_url: str |
             **capture.engine.source_availability()}
 
 
-def compare_captures(baseline: Capture, candidate: Capture, *, channel: str | None = None) -> dict:
-    left, right = summarize(baseline, channel=channel), summarize(candidate, channel=channel)
+def compare_captures(baseline: Capture, candidate: Capture, *, channel: str | None = None,
+                     call_site_grouping: str = 'source') -> dict:
+    left, right = (summarize(capture, channel=channel, call_site_grouping=call_site_grouping)
+                   for capture in (baseline, candidate))
     left_apis = {(item['channel'], item["api"]): item["count"] for item in left["apis"]}
     right_apis = {(item['channel'], item["api"]): item["count"] for item in right["apis"]}
     deltas = [{"channel": api[0], 'api': api[1], "baseline": left_apis.get(api, 0), "candidate": right_apis.get(api, 0),
@@ -187,7 +205,8 @@ def compare_captures(baseline: Capture, candidate: Capture, *, channel: str | No
     site_counts = []
     for report in (left, right):
         site_counts.append({json.dumps({key: item[key] for key in (
-            "channel", "api", "op", "scope", "source", "source_column", 'source_sha256')}, sort_keys=True): item
+            "channel", "api", "op", "scope", "source", "source_column", 'source_sha256', 'context')
+                if key in item}, sort_keys=True): item
             for item in report["call_sites"]})
     changes = []
     for key in sorted(site_counts[0].keys() | site_counts[1].keys()):

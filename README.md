@@ -159,3 +159,12 @@ PYTHONPATH=src python -m unittest discover -s tests_mcp -v
 [配套构建工作流](https://github.com/TonyChen-SH/camoufox-reverse/actions/workflows/native-browser.yml) 在浏览器五种模式、完整上游补丁守卫与 build-tester 全部通过后上传 **camoufox-trace-linux-x86_64** 和 **native-browser-evidence**。从成功的通用版本运行下载报告与原始 JSONL，可核对该次验证范围。测试结果不能直接确定目标网站的风控原因。
 
 MIT License，见 [LICENSE](LICENSE)。
+
+## Capture diagnostics
+
+The collector supports opt-in, bounded private stderr evidence before decoding;
+see [private stderr evidence](docs/private-stderr-evidence.md). Analysis exposes
+bounded per-status samples and the first known loss even when earlier provenance
+notices fill the legacy issue preview. Reader budgets and optional context-based
+call-site grouping are documented in [analysis integrity](docs/analysis-integrity.md).
+Raw bytes, source text and session values must stay in private storage.

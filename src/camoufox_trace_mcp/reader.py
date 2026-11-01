@@ -19,6 +19,7 @@ MAX_INPUT_BYTES = 64 * 1024 * 1024
 MAX_EVENTS = 100_000
 MAX_RECORDS = 200_000
 MAX_ISSUES = 50
+MAX_ISSUES_PER_STATUS = 3
 Operation = Literal["get", "set", "call", "construct"]
 Scope = Literal["instance", "static", "constructor"]
 OPERATIONS = get_args(Operation)
@@ -164,20 +165,26 @@ class Capture:
     ignored_lines: int = 0
     records: int = 0
     engine: EngineTrace = field(default_factory=EngineTrace)
+    issue_samples: dict[str, list[dict]] = field(default_factory=dict)
+    reader_limits: dict[str, int] = field(default_factory=dict)
 
     def issue(self, line: int, status: str, reason: str) -> None:
         self.flags.add(status)
         self.issue_counts[status] += 1
+        issue = {"line": line, "status": status, "reason": reason}
         if len(self.issues) < MAX_ISSUES:
-            self.issues.append({"line": line, "status": status, "reason": reason})
+            self.issues.append(issue)
+        samples = self.issue_samples.setdefault(status, [])
+        if len(samples) < MAX_ISSUES_PER_STATUS:
+            samples.append(issue)
 
 
 class Reader:
     def __init__(self, *, allow_legacy: bool = False, max_events: int = MAX_EVENTS,
                  max_records: int = MAX_RECORDS, input_format: str = 'auto', raw_name: str | None = None):
-        if max_events < 1 or max_records < 1:
+        if not _integer(max_events, 1) or not _integer(max_records, 1):
             raise ValueError("reader limits must be positive")
-        self.capture = Capture()
+        self.capture = Capture(reader_limits={"max_events": max_events, "max_records": max_records})
         if input_format not in ('auto', 'jsonl', 'vv8'):
             raise ValueError('input format must be auto, jsonl or vv8')
         self.input_format = input_format
@@ -329,6 +336,7 @@ def parse_lines(lines: Iterable[str], *, allow_legacy: bool = False,
                 input_format: str = 'auto', raw_name: str | None = None) -> Capture:
     reader = Reader(allow_legacy=allow_legacy, max_events=max_events, max_records=max_records,
                     input_format=input_format, raw_name=raw_name)
+    reader.capture.reader_limits["max_line_bytes"] = MAX_LINE_BYTES
     for line in lines:
         if len(line.encode("utf-8")) > MAX_LINE_BYTES:
             reader.capture.lines += 1
@@ -339,13 +347,18 @@ def parse_lines(lines: Iterable[str], *, allow_legacy: bool = False,
 
 
 def read_stream(stream: BinaryIO, *, allow_legacy: bool = False, max_events: int = MAX_EVENTS,
+                max_records: int = MAX_RECORDS,
                 max_input_bytes: int = MAX_INPUT_BYTES, max_line_bytes: int = MAX_LINE_BYTES,
                 input_format: str = 'auto', raw_name: str | None = None,
                 _reader: Reader | None = None, _finalize: bool = True) -> Capture:
-    if max_input_bytes < 1 or max_line_bytes < 1:
+    if not _integer(max_input_bytes, 1) or not _integer(max_line_bytes, 1):
         raise ValueError("input and line byte limits must be positive")
     reader = _reader if _reader is not None else Reader(allow_legacy=allow_legacy, max_events=max_events,
+                                                        max_records=max_records,
                                                         input_format=input_format, raw_name=raw_name)
+    # Segment readers pass a shrinking remainder; report the original capture budget.
+    reader.capture.reader_limits.setdefault('max_input_bytes', max_input_bytes)
+    reader.capture.reader_limits.setdefault('max_line_bytes', max_line_bytes)
     consumed = 0
     while True:
         chunk = stream.readline(min(max_line_bytes + 1, max_input_bytes - consumed + 1))
